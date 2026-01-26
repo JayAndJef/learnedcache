@@ -4,7 +4,7 @@ import csv
 import glob
 
 
-def parse_log_to_csv(input_filepath: Path, output_filepath: Path):
+def parse_log_to_csv(input_filepath, output_filepath):
     """
     Parses a log file line-by-line and writes directly to a CSV 
     """
@@ -31,7 +31,7 @@ def parse_log_to_csv(input_filepath: Path, output_filepath: Path):
                     row_data = parse_line(line)
                     writer.writerow(row_data)
 
-def transform_logs_to_csvs(input_pattern: str):
+def transform_logs_to_csvs(input_pattern):
     """
     Parses multiple log files matching the input pattern and writes each to a corresponding CSV file.
     """
@@ -42,9 +42,14 @@ def transform_logs_to_csvs(input_pattern: str):
 def read_csvs_to_dataframe(file_pattern: str) -> pd.DataFrame:
     """
     Reads multiple CSV files and concatenates them into a single dataframe.
+    Adds a trial_id column based on the sequence in which files are loaded.
     """
     filepaths = glob.glob(file_pattern)
-    dataframes = [pd.read_csv(filepath) for filepath in filepaths]
+    dataframes = []
+    for trial_id, filepath in enumerate(filepaths):
+        df = pd.read_csv(filepath)
+        df['trial_id'] = trial_id
+        dataframes.append(df)
     combined_df = pd.concat(dataframes, ignore_index=True)
     
     return combined_df
