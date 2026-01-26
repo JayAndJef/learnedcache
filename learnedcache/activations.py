@@ -7,7 +7,7 @@ These alternatives to softmax are designed to be more hardware-friendly:
 """
 
 import tensorflow as tf
-from tensorflow import keras
+import keras
 
 
 @keras.utils.register_keras_serializable(package="learnedcache")
