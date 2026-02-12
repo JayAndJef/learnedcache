@@ -1,0 +1,46 @@
+============================================================
+Pairwise Ranker Evaluation Report
+============================================================
+
+File pattern: data/results/fivestreamreaddirect/*_access.csv
+Total rows loaded: 9645
+Training pairs: 1469
+Test pairs: 466
+Epochs trained: 10
+
+Pairwise Test Accuracy: 0.5665
+
+Classification Report:
+                 precision    recall  f1-score   support
+
+B reused sooner       0.52      0.53      0.53       212
+A reused sooner       0.60      0.59      0.60       254
+
+       accuracy                           0.57       466
+      macro avg       0.56      0.56      0.56       466
+   weighted avg       0.57      0.57      0.57       466
+
+Weight vector shape: (44,)
+Weight vector: [-0.03592636  0.25488964 -0.28043717  0.12607348  0.2538674  -0.17285492
+  0.26898685  0.20971376 -0.32541895 -0.35626402 -0.22659905 -0.13385357
+ -0.01611769  0.1593892  -0.18858476  0.11066698 -0.30138698 -0.00600308
+ -0.18723635  0.26795793 -0.20637667  0.15567303 -0.0899694  -0.22943024
+  0.02913352 -0.35337847 -0.33740774 -0.13060035 -0.26086324  0.30258128
+  0.07646213 -0.4039061   0.15313505 -0.01906336  0.05157782  0.10626849
+ -0.2465937  -0.3795063   0.117747   -0.19841877  0.07984437  0.11226134
+  0.21371283 -0.11475191]
+
+Sample item scores (higher = reused sooner = keep):
+  Item 0: score = -0.6945
+  Item 1: score = -0.1874
+  Item 2: score = -0.1602
+  Item 3: score = -0.3563
+  Item 4: score = -0.2948
+  Item 5: score = -0.4852
+  Item 6: score = -0.5266
+  Item 7: score = -0.3547
+  Item 8: score = -0.6576
+  Item 9: score = -0.5169
+
+Eviction order (first to evict -> last):
+  [np.int64(0), np.int64(8), np.int64(6), np.int64(9), np.int64(5), np.int64(3), np.int64(7), np.int64(4), np.int64(1), np.int64(2)]

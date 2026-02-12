@@ -147,6 +147,7 @@ def main(
     output_dir: Annotated[
         Path, typer.Option(help="Directory to save visualizations and eval data.")
     ],
+    
 ) -> None:
     """Train a linear pairwise ranker and save evaluation artifacts."""
 
@@ -161,30 +162,7 @@ def main(
     typer.echo(f"Loaded {len(df)} rows from pattern: {file_pattern}")
 
     # ------------------------------------------------------------------
-    # 2. Feature Discretization
-    # ------------------------------------------------------------------
-    typer.echo("Discretizing features...")
-    discretize_cols = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"]
-    featureset_df, discretizer = train_and_transform_discretizer(
-        df[discretize_cols], n_bins=10, strategy="quantile"
-    )
-    n_bins_list = [len(discretizer.bin_edges_[i]) - 1 for i in range(len(discretize_cols))]
-    typer.echo(f"Bins per discretized feature: {n_bins_list}")
-
-    # ------------------------------------------------------------------
-    # 3. One-Hot Encode + Build Full Feature Matrix
-    # ------------------------------------------------------------------
-    X_onehot = one_hot_encode_features(featureset_df, n_bins_list)
-    X_raw = df[["trial_id"]].values.astype(np.float32)
-    X_full = np.concatenate([X_onehot, X_raw], axis=1)
-    n_encoded_features = X_full.shape[1]
-
-    typer.echo(f"Full feature matrix shape: {X_full.shape}")
-    typer.echo(f"  One-hot features: {X_onehot.shape[1]} (from bins {n_bins_list})")
-    typer.echo(f"  Raw features: {X_raw.shape[1]} (trial_id)")
-
-    # ------------------------------------------------------------------
-    # 4. Build Labels (Next-Reuse Time)
+    # 2. Build Labels (Next-Reuse Time)
     # ------------------------------------------------------------------
     typer.echo("Computing labels...")
     Y = df.groupby(["trial_id", "dm", "dn", "in", "of"])["pd"].shift(-1)
@@ -196,20 +174,56 @@ def main(
     Y_np = Y.values
 
     # ------------------------------------------------------------------
-    # 5. Generate Pairwise Training Data
+    # 3. Random Train/Test Split (80/20)
     # ------------------------------------------------------------------
-    typer.echo("Generating pairwise training data...")
+    typer.echo("Splitting data randomly (80/20)...")
     train_idx, test_idx = train_test_split(
-        np.arange(len(X_full)), test_size=0.2, random_state=42
+        np.arange(len(df)), test_size=0.2, random_state=42
+    )
+    typer.echo(f"  Train rows: {len(train_idx)}  |  Test rows: {len(test_idx)}")
+
+    # ------------------------------------------------------------------
+    # 4. Feature Discretization (fit on train only)
+    # ------------------------------------------------------------------
+    typer.echo("Discretizing features (fit on train only)...")
+    discretize_cols = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"]
+
+    train_features_df = df.iloc[train_idx][discretize_cols].reset_index(drop=True)
+    test_features_df = df.iloc[test_idx][discretize_cols].reset_index(drop=True)
+
+    train_discretized, discretizer = train_and_transform_discretizer(
+        train_features_df, n_bins=10, strategy="quantile"
+    )
+    n_bins_list = [len(discretizer.bin_edges_[i]) - 1 for i in range(len(discretize_cols))]
+    typer.echo(f"Bins per discretized feature: {n_bins_list}")
+
+    # Transform test data using the train-fitted discretizer
+    test_discretized_np = discretizer.transform(test_features_df)
+    test_discretized = pd.DataFrame(
+        test_discretized_np,
+        columns=discretize_cols,
     )
 
-    X_train_full = X_full[train_idx]
-    X_test_full = X_full[test_idx]
+    # ------------------------------------------------------------------
+    # 5. One-Hot Encode + Build Feature Matrices
+    # ------------------------------------------------------------------
+    X_train_full = one_hot_encode_features(train_discretized, n_bins_list)
+    X_test_full = one_hot_encode_features(test_discretized, n_bins_list)
+    n_encoded_features = X_train_full.shape[1]
+
+    typer.echo(f"Feature matrix shape: train={X_train_full.shape}, test={X_test_full.shape}")
+    typer.echo(f"  One-hot features: {n_encoded_features} (from bins {n_bins_list})")
+
     Y_train_raw = Y_np[train_idx]
     Y_test_raw = Y_np[test_idx]
 
-    N_TRAIN_PAIRS = len(X_train_full) * 5
-    N_TEST_PAIRS = len(X_test_full) * 5
+    # ------------------------------------------------------------------
+    # 6. Generate Pairwise Training Data
+    # ------------------------------------------------------------------
+    typer.echo("Generating pairwise training data...")
+
+    N_TRAIN_PAIRS = len(Y_train_raw) * 5
+    N_TEST_PAIRS = len(Y_test_raw) * 5
 
     X_diff_train, Y_train_pairs = generate_pair_diffs(
         X_train_full, Y_train_raw, N_TRAIN_PAIRS, seed=42
@@ -224,7 +238,7 @@ def main(
     typer.echo(f"  Test  label balance (frac A sooner): {Y_test_pairs.mean():.3f}")
 
     # ------------------------------------------------------------------
-    # 6. Build Model
+    # 7. Build Model
     # ------------------------------------------------------------------
     import keras
     from keras import layers
@@ -239,12 +253,12 @@ def main(
     model.summary()
 
     # ------------------------------------------------------------------
-    # 7. Training
+    # 8. Training
     # ------------------------------------------------------------------
     typer.echo("Training...")
     early_stop = EarlyStopping(
         monitor="val_loss",
-        patience=10,
+        patience=5,
         restore_best_weights=True,
         verbose=1,
     )
@@ -252,7 +266,7 @@ def main(
     history = model.fit(
         X_diff_train,
         Y_train_pairs,
-        epochs=50,
+        epochs=10,
         batch_size=256,
         validation_data=(X_diff_test, Y_test_pairs),
         callbacks=[early_stop],
@@ -260,7 +274,7 @@ def main(
     )
 
     # ------------------------------------------------------------------
-    # 8. Evaluation
+    # 9. Evaluation
     # ------------------------------------------------------------------
     typer.echo("Evaluating...")
     Y_pred_prob = model.predict(X_diff_test, verbose=0).ravel()
@@ -321,7 +335,7 @@ def main(
     typer.echo(f"Saved training curves & confusion matrix → {training_fig_path}")
 
     # ------------------------------------------------------------------
-    # 9. Extract Weight Vector
+    # 10. Extract Weight Vector
     # ------------------------------------------------------------------
     w = model.get_layer("ranking_weight").get_weights()[0].ravel()
 
@@ -334,7 +348,6 @@ def main(
     for col, n_bins in zip(discretize_cols, n_bins_list):
         for b in range(n_bins):
             feature_names.append(f"{col}_bin{b}")
-    feature_names.extend(["trial_id"])
 
     fig_w, ax_w = plt.subplots(figsize=(14, 5))
     colors = ["#d62728" if v < 0 else "#2ca02c" for v in w]
