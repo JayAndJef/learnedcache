@@ -335,7 +335,21 @@ def main(
     typer.echo(f"Saved training curves & confusion matrix → {training_fig_path}")
 
     # ------------------------------------------------------------------
-    # 10. Extract Weight Vector
+    # 10. Save Model and Discretizer for BPF Loading
+    # ------------------------------------------------------------------
+    import pickle
+
+    model_path = output_dir / "model.keras"
+    model.save(model_path)
+    typer.echo(f"Saved model → {model_path}")
+
+    discretizer_path = output_dir / "discretizer.pkl"
+    with open(discretizer_path, "wb") as f:
+        pickle.dump(discretizer, f)
+    typer.echo(f"Saved discretizer → {discretizer_path}")
+
+    # ------------------------------------------------------------------
+    # 11. Extract Weight Vector
     # ------------------------------------------------------------------
     w = model.get_layer("ranking_weight").get_weights()[0].ravel()
 
