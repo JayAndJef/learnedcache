@@ -95,7 +95,7 @@ def export_model(
             "index": feat_idx,
             "name": feat_name,
             "n_bins": n_bins,
-            "bin_edges": interior_edges,  # Only interior edges
+            "bin_edges": [int(x) for x in interior_edges],  # Only interior edges
             "weights_float": feat_weights_float.tolist(),
             "weights_int": feat_weights_int,
         }
