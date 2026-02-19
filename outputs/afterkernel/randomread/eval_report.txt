@@ -1,0 +1,51 @@
+============================================================
+Pairwise Ranker Evaluation Report
+============================================================
+
+File pattern: data/afterkernel/randomread.csv
+Total rows loaded: 509475
+Training pairs: 622807
+Test pairs: 155105
+Epochs trained: 7
+
+Pairwise Test Accuracy: 0.6551
+
+Classification Report:
+                 precision    recall  f1-score   support
+
+B reused sooner       0.66      0.65      0.65     77516
+A reused sooner       0.65      0.66      0.66     77589
+
+       accuracy                           0.66    155105
+      macro avg       0.66      0.66      0.66    155105
+   weighted avg       0.66      0.66      0.66    155105
+
+Weight vector shape: (49,)
+Weight vector: [ 8.58260915e-02  8.72661993e-02 -3.66998725e-02 -3.48648168e-02
+ -5.60096465e-02 -8.87429044e-02 -5.60092553e-02 -1.01991415e-01
+  1.76996887e-01  1.73559606e-01 -3.11103370e-02  1.02911657e-03
+ -6.55174181e-02 -3.67556140e-02 -1.26093701e-02 -1.05198901e-02
+ -2.36967877e-02  3.78318168e-02 -3.28548998e-02 -1.92141026e-01
+ -5.41975796e-02 -6.54300898e-02 -6.87627867e-02 -3.98695692e-02
+ -6.38731420e-02 -1.04231827e-01 -1.11198284e-01 -1.02897294e-01
+ -4.26755399e-02 -2.27861956e-01 -3.99198346e-02 -6.16528578e-02
+ -3.88864726e-02 -2.55741104e-02 -4.19264920e-02 -3.05654928e-02
+ -2.72404812e-02  1.29485115e-01  4.18717274e-03  7.09309161e-01
+  9.05685365e-01  8.72234106e-01  7.69324303e-01  5.89884758e-01
+  4.20687407e-01  2.22434372e-01 -9.22688320e-02 -6.22128487e-01
+ -1.70550907e+00]
+
+Sample item scores (higher = reused sooner = keep):
+  Item 0: score = 0.9808
+  Item 1: score = -0.5722
+  Item 2: score = 0.2513
+  Item 3: score = 0.8026
+  Item 4: score = 0.2814
+  Item 5: score = 0.4611
+  Item 6: score = 0.6791
+  Item 7: score = 1.0116
+  Item 8: score = -0.5947
+  Item 9: score = 0.8628
+
+Eviction order (first to evict -> last):
+  [np.int64(8), np.int64(1), np.int64(2), np.int64(4), np.int64(5), np.int64(6), np.int64(3), np.int64(9), np.int64(0), np.int64(7)]
