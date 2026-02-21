@@ -1,0 +1,41 @@
+digraph G {
+    compound=true;
+    rankdir=TB;
+    fontname="Courier New"
+    node [shape=box, style=filled, fillcolor=white];
+
+    subgraph cluster_host {
+        label = "Host Machine";
+        style = dashed;
+        color = black;
+        
+        disk_host [label="Disk (Host)", fillcolor=lightgrey, fontname="Courier New"];
+
+        subgraph cluster_vm {
+            label = "Virtual Machine";
+            style = solid;
+            color = blue;
+            bgcolor = "#f9f9f9";
+
+            subgraph cluster_userspace {
+                label = "Userspace";
+                style = dotted;
+                loader [label="cache_ext eBPF loader", fillcolor="#e1f5fe", fontname="Courier New"];
+                disk_vm [label="Disk (VM)", fillcolor="#ffebee", fontname="Courier New"];
+            }
+
+            subgraph cluster_kernelspace {
+                label = "Kernelspace";
+                style = dotted;
+                tracer [label="Tracer Policy", fillcolor="#f3e5f5", fontname="Courier New"];
+            }
+        }
+    }
+
+    // Edges
+    loader -> tracer [label=" loads", fontname="Courier New"];
+    tracer -> loader [label=" sends logs", fontname="Courier New"];
+    loader -> disk_vm [label=" sends logs", fontname="Courier New"];
+    disk_vm -> disk_host [label=" sends logs", fontname="Courier New"];
+    disk_host -> disk_host [label=" parses logs", fontname="Courier New"]
+}
