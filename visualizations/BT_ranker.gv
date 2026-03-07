@@ -1,0 +1,48 @@
+digraph linear_perceptron {
+    rankdir=LR;
+    splines=line;
+
+    node [shape=circle, style=solid, color=black, fontname="Arial", width=0.8, fixedsize=true];
+    edge [color=black, fontname="Arial", fontsize=12];
+
+    subgraph cluster_pairwise {
+        label="Pairwise\nfeature\ndifferences\nbetween access\nA and B";
+        labelloc="t";
+        fontsize=14;
+        fontname="Courier New";
+        color=black;
+        style=dotted;
+
+        { rank=same; dx1; dx2; dx3; dx4; dxi; }
+
+        dx1 [label=<&#916;x<sub>1</sub>>];
+        dx2 [label=<&#916;x<sub>2</sub>>];
+        dx3 [label=<&#916;x<sub>3</sub>>];
+        dx4 [label=<&#916;x<sub>4</sub>>];
+        dxi [label=<&#916;x<sub>i</sub>>];
+    }
+
+    sum [label=<&Sigma;>, fontsize=20];
+    activation [label=<&sigma;>, fontsize=18];
+    y_hat [label=<y&#770;>, fontsize=18];
+
+    dx1 -> sum [label=<w<sub>1</sub>>];
+    dx2 -> sum [label=<w<sub>2</sub>>];
+    dx3 -> sum [label=<w<sub>3</sub>>];
+    dx4 -> sum [label=<w<sub>4</sub>>];
+    dxi -> sum [label=<w<sub>i</sub>>];
+
+    sum -> activation;
+    activation -> y_hat;
+
+    subgraph cluster_output {
+        label="probability\npage in A\nused before\npage in B";
+        labelloc="t";
+        fontsize=14;
+        fontname="Courier New";
+        color=black;
+        style=dotted;
+
+        y_hat;
+    }
+}

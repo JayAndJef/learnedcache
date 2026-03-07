@@ -147,7 +147,15 @@ def main(
     output_dir: Annotated[
         Path, typer.Option(help="Directory to save visualizations and eval data.")
     ],
-    
+    max_epochs: Annotated[
+        int, typer.Option(help="Maximum number of training epochs.")
+    ] = 10,
+    batch_size: Annotated[
+        int, typer.Option(help="Batch size for training.")
+    ] = 256,
+    sampling_multiplier: Annotated[
+        float, typer.Option(help="Multiplier for number of pairs to generate (relative to dataset size).")
+    ] = 1.0,
 ) -> None:
     """Train a linear pairwise ranker and save evaluation artifacts."""
 
@@ -222,8 +230,8 @@ def main(
     # ------------------------------------------------------------------
     typer.echo("Generating pairwise training data...")
 
-    N_TRAIN_PAIRS = len(Y_train_raw) * 5
-    N_TEST_PAIRS = len(Y_test_raw) * 5
+    N_TRAIN_PAIRS = int(len(Y_train_raw) * sampling_multiplier)
+    N_TEST_PAIRS = int(len(Y_test_raw) * sampling_multiplier)
 
     X_diff_train, Y_train_pairs = generate_pair_diffs(
         X_train_full, Y_train_raw, N_TRAIN_PAIRS, seed=42
@@ -232,8 +240,8 @@ def main(
         X_test_full, Y_test_raw, N_TEST_PAIRS, seed=123
     )
 
-    typer.echo(f"  Training pairs: {len(Y_train_pairs)}")
-    typer.echo(f"  Test pairs:     {len(Y_test_pairs)}")
+    typer.echo(f"  Training pairs: {len(Y_train_pairs)} (multiplier: {sampling_multiplier})")
+    typer.echo(f"  Test pairs:     {len(Y_test_pairs)} (multiplier: {sampling_multiplier})")
     typer.echo(f"  Train label balance (frac A sooner): {Y_train_pairs.mean():.3f}")
     typer.echo(f"  Test  label balance (frac A sooner): {Y_test_pairs.mean():.3f}")
 
@@ -255,7 +263,7 @@ def main(
     # ------------------------------------------------------------------
     # 8. Training
     # ------------------------------------------------------------------
-    typer.echo("Training...")
+    typer.echo(f"Training (max_epochs={max_epochs}, batch_size={batch_size})...")
     early_stop = EarlyStopping(
         monitor="val_loss",
         patience=5,
@@ -266,8 +274,8 @@ def main(
     history = model.fit(
         X_diff_train,
         Y_train_pairs,
-        epochs=10,
-        batch_size=256,
+        epochs=max_epochs,
+        batch_size=batch_size,
         validation_data=(X_diff_test, Y_test_pairs),
         callbacks=[early_stop],
         verbose=1,

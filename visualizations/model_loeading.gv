@@ -1,0 +1,56 @@
+digraph G {
+    compound=true;
+    fontname="Courier New";
+    node [shape=box, style=filled, fillcolor=white, fontname="Courier New"];
+    edge [fontname="Courier New"];
+
+    subgraph cluster_host {
+        label = "Host Machine";
+        style = dashed;
+        color = black;
+        
+        ml_pipeline [label="ML Pipeline", fillcolor="#fff9c4"];
+        keras_model [label=".keras Model", fillcolor="#e8f5e9"];
+        pkl_discretizer [label=".pkl Discretizer", fillcolor="#e8f5e9"];
+        serializer [label="Python Serializer", fillcolor="#e1f5fe"];
+        model_json [label=".json Model Descriptor", fillcolor="#ffebee"];
+
+        // Grouping these so they stack vertically while the graph moves right
+        {rank=same; keras_model; pkl_discretizer;}
+
+        ml_pipeline -> keras_model [label=" produces"];
+        ml_pipeline -> pkl_discretizer [label=" produces"];
+        keras_model -> serializer [label=" load"];
+        pkl_discretizer -> serializer [label=" load"];
+        serializer -> model_json [label=" serialize"];
+    }
+
+    subgraph cluster_vm {
+        label = "Virtual Machine";
+        style = solid;
+        color = blue;
+        bgcolor = "#f9f9f9";
+
+        subgraph cluster_userspace {
+            label = "Userspace";
+            style = dotted;
+            ebpf_loader [label="eBPF Loader Program", fillcolor="#e1f5fe"];
+            
+            ebpf_loader -> ebpf_loader [label=" deserialize"];
+        }
+
+        subgraph cluster_kernelspace {
+            label = "Kernelspace";
+            style = dotted;
+            ebpf_map [label="eBPF Map", shape=cylinder, fillcolor="#ffffff"];
+            cache_ext [label="cache_ext eBPF Program", fillcolor="#f3e5f5"];
+            
+            // Keep the map and program on the same horizontal level
+            {rank=same; ebpf_map; cache_ext;}
+        }
+    }
+
+    model_json -> ebpf_loader [label=" load"];
+    ebpf_loader -> ebpf_map [label=" update map"];
+    ebpf_map -> cache_ext [label=" read policy"];
+}
