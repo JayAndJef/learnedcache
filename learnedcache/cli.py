@@ -3,10 +3,11 @@
 Learned Cache CLI - Unified command-line interface for cache eviction model training and export.
 
 Commands:
-    transform-logs:  Convert raw logs to CSV format
-    train-ranker:    Train a pairwise ranker model on cache access traces
-    export-model:    Export trained model to BPF-compatible JSON format
-    full-pipeline:   Complete workflow: transform → train → export (3-step pipeline)
+    transform-logs:     Convert raw logs to CSV format
+    train-ranker:       Train a pairwise ranker model on cache access traces
+    export-model:       Export trained model to BPF-compatible JSON format
+    train-and-export:   Train model and export to BPF (2-step: train → export)
+    full-pipeline:      Complete workflow (3-step: transform → train → export)
 """
 
 from pathlib import Path
@@ -75,10 +76,10 @@ def export_model(
 
 
 @app.command()
-def full_pipeline(
-    log_pattern: Annotated[str, typer.Option(help="Glob pattern for input log files")],
+def train_and_export(
+    file_pattern: Annotated[str, typer.Option(help="Glob pattern for input CSV files")],
     output_dir: Annotated[Path, typer.Option(help="Directory to save model and artifacts")],
-    export_file: Annotated[Path, typer.Option(help="Output JSON file for BPF export")] = Path("model_weights.json"),
+    export_filename: Annotated[str, typer.Option(help="Filename for BPF export JSON")] = "model_weights.json",
     discretize_cols: Annotated[list[str], typer.Option(help="Columns to discretize")] = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"],
     n_bins: Annotated[int, typer.Option(help="Number of bins for discretization")] = 10,
     max_epochs: Annotated[int, typer.Option(help="Maximum training epochs")] = 50,
@@ -87,14 +88,16 @@ def full_pipeline(
     random_state: Annotated[int, typer.Option(help="Random seed for reproducibility")] = 42,
     weight_scale: Annotated[int, typer.Option(help="Scale factor for quantizing weights")] = 10000,
 ) -> None:
-    """Complete pipeline: transform logs → train model → export to BPF format."""
+    """Train model and export to BPF format (2-step pipeline: train → export)."""
 
-    run_transform_logs(log_pattern, verbose=True)
+    output_dir = Path(output_dir)
+    export_file = output_dir / export_filename
 
-    csv_pattern = log_pattern.replace(".log", "_access.csv")
-
+    typer.echo("=" * 80)
+    typer.echo("STEP 1: TRAINING MODEL")
+    typer.echo("=" * 80)
     run_train_ranker(
-        file_pattern=csv_pattern,
+        file_pattern=file_pattern,
         output_dir=output_dir,
         discretize_cols=discretize_cols,
         n_bins=n_bins,
@@ -105,6 +108,9 @@ def full_pipeline(
         verbose=True,
     )
 
+    typer.echo("\n" + "=" * 80)
+    typer.echo("STEP 2: EXPORTING MODEL TO BPF FORMAT")
+    typer.echo("=" * 80)
     try:
         run_export_model(
             model_dir=output_dir,
@@ -117,5 +123,71 @@ def full_pipeline(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
+    typer.echo("\n" + "=" * 80)
+    typer.echo("✅ COMPLETE: Model trained and exported!")
+    typer.echo("=" * 80)
+    typer.echo(f"Model artifacts: {output_dir}")
+    typer.echo(f"BPF export: {export_file}")
+
+
+@app.command()
+def full_pipeline(
+    log_pattern: Annotated[str, typer.Option(help="Glob pattern for input log files")],
+    output_dir: Annotated[Path, typer.Option(help="Directory to save model and artifacts")],
+    export_filename: Annotated[str, typer.Option(help="Filename for BPF export JSON")] = "model_weights.json",
+    discretize_cols: Annotated[list[str], typer.Option(help="Columns to discretize")] = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"],
+    n_bins: Annotated[int, typer.Option(help="Number of bins for discretization")] = 10,
+    max_epochs: Annotated[int, typer.Option(help="Maximum training epochs")] = 50,
+    batch_size: Annotated[int, typer.Option(help="Training batch size")] = 256,
+    sampling_multiplier: Annotated[float, typer.Option(help="Pair sampling multiplier")] = 1.0,
+    random_state: Annotated[int, typer.Option(help="Random seed for reproducibility")] = 42,
+    weight_scale: Annotated[int, typer.Option(help="Scale factor for quantizing weights")] = 10000,
+) -> None:
+    """Complete pipeline: transform logs → train model → export to BPF format (3-step)."""
+
+    output_dir = Path(output_dir)
+    export_file = output_dir / export_filename
+
+    typer.echo("=" * 80)
+    typer.echo("STEP 1: TRANSFORMING LOGS TO CSV")
+    typer.echo("=" * 80)
+    run_transform_logs(log_pattern, verbose=True)
+
+    # Derive CSV pattern from log pattern
+    csv_pattern = log_pattern.replace(".log", "_access.csv")
+
+    typer.echo("\n" + "=" * 80)
+    typer.echo("STEP 2: TRAINING MODEL")
+    typer.echo("=" * 80)
+    run_train_ranker(
+        file_pattern=csv_pattern,
+        output_dir=output_dir,
+        discretize_cols=discretize_cols,
+        n_bins=n_bins,
+        max_epochs=max_epochs,
+        batch_size=batch_size,
+        sampling_multiplier=sampling_multiplier,
+        random_state=random_state,
+        verbose=True,
+    )
+
+    typer.echo("\n" + "=" * 80)
+    typer.echo("STEP 3: EXPORTING MODEL TO BPF FORMAT")
+    typer.echo("=" * 80)
+    try:
+        run_export_model(
+            model_dir=output_dir,
+            output_file=export_file,
+            weight_scale=weight_scale,
+            feature_names=discretize_cols,
+            verbose=True,
+        )
+    except FileNotFoundError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("\n" + "=" * 80)
+    typer.echo("✅ COMPLETE: Full pipeline finished!")
+    typer.echo("=" * 80)
     typer.echo(f"Model artifacts: {output_dir}")
     typer.echo(f"BPF export: {export_file}")
