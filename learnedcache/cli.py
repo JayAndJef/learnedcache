@@ -24,9 +24,10 @@ app = typer.Typer(help="Learned Cache - Train and export cache eviction models")
 @app.command()
 def transform_logs(
     log_pattern: Annotated[str, typer.Option(help="Glob pattern for input log files")],
+    verbose: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Transform raw log files to CSV format."""
-    run_transform_logs(log_pattern, verbose=True)
+    run_transform_logs(log_pattern, verbose=verbose)
 
 
 @app.command()
@@ -39,6 +40,7 @@ def train_ranker(
     batch_size: Annotated[int, typer.Option(help="Training batch size")] = 256,
     sampling_multiplier: Annotated[float, typer.Option(help="Pair sampling multiplier")] = 1.0,
     random_state: Annotated[int, typer.Option(help="Random seed for reproducibility")] = 42,
+    verbose: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Train a linear pairwise ranker model on cache access traces."""
     run_train_ranker(
@@ -50,7 +52,7 @@ def train_ranker(
         batch_size=batch_size,
         sampling_multiplier=sampling_multiplier,
         random_state=random_state,
-        verbose=True,
+        verbose=verbose,
     )
 
 
@@ -60,6 +62,7 @@ def export_model(
     output_file: Annotated[Path, typer.Option(help="Output JSON file")] = Path("model_weights.json"),
     weight_scale: Annotated[int, typer.Option(help="Scale factor for quantizing weights")] = 10000,
     feature_names: Annotated[list[str], typer.Option(help="Feature names in BPF enum order")] = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"],
+    verbose: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Export trained model to BPF-compatible JSON format."""
     try:
@@ -68,12 +71,11 @@ def export_model(
             output_file=output_file,
             weight_scale=weight_scale,
             feature_names=feature_names,
-            verbose=True,
+            verbose=verbose,
         )
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
-
 
 @app.command()
 def train_and_export(
@@ -87,6 +89,7 @@ def train_and_export(
     sampling_multiplier: Annotated[float, typer.Option(help="Pair sampling multiplier")] = 1.0,
     random_state: Annotated[int, typer.Option(help="Random seed for reproducibility")] = 42,
     weight_scale: Annotated[int, typer.Option(help="Scale factor for quantizing weights")] = 10000,
+    verbose: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Train model and export to BPF format (2-step pipeline: train → export)."""
 
@@ -105,7 +108,7 @@ def train_and_export(
         batch_size=batch_size,
         sampling_multiplier=sampling_multiplier,
         random_state=random_state,
-        verbose=True,
+        verbose=verbose,
     )
 
     typer.echo("\n" + "=" * 80)
@@ -117,7 +120,7 @@ def train_and_export(
             output_file=export_file,
             weight_scale=weight_scale,
             feature_names=discretize_cols,
-            verbose=True,
+            verbose=verbose,
         )
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
@@ -142,6 +145,7 @@ def full_pipeline(
     sampling_multiplier: Annotated[float, typer.Option(help="Pair sampling multiplier")] = 1.0,
     random_state: Annotated[int, typer.Option(help="Random seed for reproducibility")] = 42,
     weight_scale: Annotated[int, typer.Option(help="Scale factor for quantizing weights")] = 10000,
+    verbose: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Complete pipeline: transform logs → train model → export to BPF format (3-step)."""
 
@@ -151,7 +155,7 @@ def full_pipeline(
     typer.echo("=" * 80)
     typer.echo("STEP 1: TRANSFORMING LOGS TO CSV")
     typer.echo("=" * 80)
-    run_transform_logs(log_pattern, verbose=True)
+    run_transform_logs(log_pattern, verbose=verbose)
 
     # Derive CSV pattern from log pattern
     csv_pattern = log_pattern.replace(".log", "_access.csv")
@@ -168,7 +172,7 @@ def full_pipeline(
         batch_size=batch_size,
         sampling_multiplier=sampling_multiplier,
         random_state=random_state,
-        verbose=True,
+        verbose=verbose,
     )
 
     typer.echo("\n" + "=" * 80)
@@ -180,7 +184,7 @@ def full_pipeline(
             output_file=export_file,
             weight_scale=weight_scale,
             feature_names=discretize_cols,
-            verbose=True,
+            verbose=verbose,
         )
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)

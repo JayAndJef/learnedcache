@@ -31,7 +31,7 @@ def run_transform_logs(log_pattern: str, verbose: bool = True) -> None:
 def run_train_ranker(
     file_pattern: str,
     output_dir: Path,
-    discretize_cols: list[str] = None,
+    discretize_cols: list[str] = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"],
     n_bins: int = 10,
     max_epochs: int = 50,
     batch_size: int = 256,
@@ -40,7 +40,7 @@ def run_train_ranker(
     verbose: bool = True,
 ) -> dict:
     """Train a linear pairwise ranker model on cache access traces.
-    
+
     Args:
         file_pattern: Glob pattern for input CSV files
         output_dir: Directory to save model and artifacts
@@ -51,13 +51,10 @@ def run_train_ranker(
         sampling_multiplier: Pair sampling multiplier
         random_state: Random seed for reproducibility
         verbose: Whether to print progress messages
-    
+
     Returns:
         dict with keys: model, discretizer, n_bins_list, discretize_cols, accuracy, history
     """
-    if discretize_cols is None:
-        discretize_cols = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"]
-    
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -242,7 +239,7 @@ def run_export_model(
     model_dir: Path,
     output_file: Path,
     weight_scale: int = 10000,
-    feature_names: list[str] = None,
+    feature_names: list[str] = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"],
     verbose: bool = True,
 ) -> dict:
     """Export trained model to BPF-compatible JSON format.
@@ -257,9 +254,6 @@ def run_export_model(
     Returns:
         dict: The exported model data
     """
-    if feature_names is None:
-        feature_names = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"]
-
     if verbose:
         print(f"Loading model from {model_dir}...")
 
@@ -328,4 +322,3 @@ def run_export_model(
         print("Ready to load into BPF maps!")
 
     return model_data
-
