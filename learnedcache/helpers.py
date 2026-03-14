@@ -26,49 +26,49 @@ def save_training_visualizations(history, Y_test_pairs, Y_pred, accuracy, output
         'ytick.labelsize': 18,
         'legend.fontsize': 18,
     }):
-    fig = plt.figure(figsize=(16, 5))
+        fig = plt.figure(figsize=(16, 5))
 
-    ax1 = plt.subplot(1, 3, 1)
-    ax1.plot(history.history["accuracy"], label="Train Acc")
-    ax1.plot(history.history["val_accuracy"], label="Val Acc")
-    ax1.set_title("Pairwise Ranking Accuracy")
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Accuracy")
-    ax1.legend()
-    ax1.grid(True)
+        ax1 = plt.subplot(1, 3, 1)
+        ax1.plot(history.history["accuracy"], label="Train Acc")
+        ax1.plot(history.history["val_accuracy"], label="Val Acc")
+        ax1.set_title("Pairwise Ranking Accuracy")
+        ax1.set_xlabel("Epoch")
+        ax1.set_ylabel("Accuracy")
+        ax1.legend()
+        ax1.grid(True)
 
-    ax2 = plt.subplot(1, 3, 2)
-    ax2.plot(history.history["loss"], label="Train Loss")
-    ax2.plot(history.history["val_loss"], label="Val Loss")
-    ax2.set_title("Pairwise Ranking Loss")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Binary Crossentropy")
-    ax2.legend()
-    ax2.grid(True)
+        ax2 = plt.subplot(1, 3, 2)
+        ax2.plot(history.history["loss"], label="Train Loss")
+        ax2.plot(history.history["val_loss"], label="Val Loss")
+        ax2.set_title("Pairwise Ranking Loss")
+        ax2.set_xlabel("Epoch")
+        ax2.set_ylabel("Binary Crossentropy")
+        ax2.legend()
+        ax2.grid(True)
 
-    ax3 = plt.subplot(1, 3, 3)
-    cm = confusion_matrix(Y_test_pairs.astype(int), Y_pred)
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt="d",
-        cmap="Blues",
-        cbar=True,
-        square=True,
-        ax=ax3,
-        xticklabels=["B sooner", "A sooner"],
-        yticklabels=["B sooner", "A sooner"],
-        annot_kws={"size": 20},
-    )
-    ax3.set_title(f"Confusion Matrix\nAccuracy: {accuracy:.4f}")
-    ax3.set_ylabel("True")
-    ax3.set_xlabel("Predicted")
+        ax3 = plt.subplot(1, 3, 3)
+        cm = confusion_matrix(Y_test_pairs.astype(int), Y_pred)
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            cbar=True,
+            square=True,
+            ax=ax3,
+            xticklabels=["B sooner", "A sooner"],
+            yticklabels=["B sooner", "A sooner"],
+            annot_kws={"size": 20},
+        )
+        ax3.set_title(f"Confusion Matrix\nAccuracy: {accuracy:.4f}")
+        ax3.set_ylabel("True")
+        ax3.set_xlabel("Predicted")
 
-    plt.tight_layout()
-    fig_path = output_dir / "training_curves.png"
-    fig.savefig(fig_path)
-    plt.close(fig)
-    typer.echo(f"Training visualizations → {fig_path}")
+        plt.tight_layout()
+        fig_path = output_dir / "training_curves.png"
+        fig.savefig(fig_path)
+        plt.close(fig)
+        typer.echo(f"Training visualizations → {fig_path}")
 
 
 def save_evaluation_report(
