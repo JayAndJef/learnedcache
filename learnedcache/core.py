@@ -220,7 +220,16 @@ def run_train_ranker(
     # ------------------------------------------------------------------
     # 11. Save Evaluation Report
     # ------------------------------------------------------------------
-    save_evaluation_report(model, X_test_full, discretize_cols, n_bins_list, output_dir)
+    save_evaluation_report(
+        model, X_test_full, discretize_cols, n_bins_list, output_dir,
+        file_pattern=file_pattern,
+        n_rows=len(df),
+        n_train_pairs=len(Y_train_pairs),
+        n_test_pairs=len(Y_test_pairs),
+        epochs_trained=len(history.history['loss']),
+        accuracy=accuracy,
+        classification_report_str=report,
+    )
 
     if verbose:
         print("Done.")

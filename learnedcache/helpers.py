@@ -18,6 +18,14 @@ plt.rcParams["figure.dpi"] = 300
 
 def save_training_visualizations(history, Y_test_pairs, Y_pred, accuracy, output_dir):
     """Save training curves and confusion matrix."""
+    with plt.rc_context({
+        'font.size': 20,
+        'axes.labelsize': 20,
+        'axes.titlesize': 24,
+        'xtick.labelsize': 18,
+        'ytick.labelsize': 18,
+        'legend.fontsize': 18,
+    }):
     fig = plt.figure(figsize=(16, 5))
 
     ax1 = plt.subplot(1, 3, 1)
@@ -50,6 +58,7 @@ def save_training_visualizations(history, Y_test_pairs, Y_pred, accuracy, output
         ax=ax3,
         xticklabels=["B sooner", "A sooner"],
         yticklabels=["B sooner", "A sooner"],
+        annot_kws={"size": 20},
     )
     ax3.set_title(f"Confusion Matrix\nAccuracy: {accuracy:.4f}")
     ax3.set_ylabel("True")
@@ -59,10 +68,23 @@ def save_training_visualizations(history, Y_test_pairs, Y_pred, accuracy, output
     fig_path = output_dir / "training_curves.png"
     fig.savefig(fig_path)
     plt.close(fig)
-    typer.echo(f"Saved training visualizations → {fig_path}")
+    typer.echo(f"Training visualizations → {fig_path}")
 
 
-def save_evaluation_report(model, X_test_full, column_names, n_bins_list, output_dir):
+def save_evaluation_report(
+    model,
+    X_test_full,
+    column_names,
+    n_bins_list,
+    output_dir,
+    file_pattern: str = "",
+    n_rows: int = 0,
+    n_train_pairs: int = 0,
+    n_test_pairs: int = 0,
+    epochs_trained: int = 0,
+    accuracy: float = 0.0,
+    classification_report_str: str = "",
+):
     """Save evaluation report with feature importance and sample scores."""
     w = model.get_layer("ranking_weight").get_weights()[0].ravel()
 
@@ -85,7 +107,7 @@ def save_evaluation_report(model, X_test_full, column_names, n_bins_list, output
     importance_path = output_dir / "feature_importance.png"
     fig_w.savefig(importance_path)
     plt.close(fig_w)
-    typer.echo(f"Saved feature importance → {importance_path}")
+    typer.echo(f"Feature importance → {importance_path}")
 
     sample_items = X_test_full[:10]
     scores = sample_items @ w
@@ -93,19 +115,30 @@ def save_evaluation_report(model, X_test_full, column_names, n_bins_list, output
 
     eval_path = output_dir / "eval_report.txt"
     with open(eval_path, "w") as f:
-        f.write("=== Pairwise Ranker Evaluation Report ===\n\n")
+        f.write("="*60 + "\n")
+        f.write("Pairwise Ranker Evaluation Report\n")
+        f.write("="*60 + "\n\n")
+
+        f.write(f"File pattern: {file_pattern}\n")
+        f.write(f"Total rows loaded: {n_rows}\n")
+        f.write(f"Training pairs: {n_train_pairs}\n")
+        f.write(f"Test pairs: {n_test_pairs}\n")
+        f.write(f"Epochs trained: {epochs_trained}\n\n")
+
+        f.write(f"Pairwise Test Accuracy: {accuracy:.4f}\n\n")
+
+        f.write("Classification Report:\n")
+        f.write(classification_report_str)
+        f.write("\n")
+
         f.write(f"Weight vector shape: {w.shape}\n")
-        f.write(f"Weight range: [{w.min():.4f}, {w.max():.4f}]\n\n")
+        f.write(f"Weight vector: {w}\n\n")
 
-        f.write("Feature weights:\n")
-        for fname, weight in zip(feature_names, w):
-            f.write(f"  {fname:20s}: {weight:8.4f}\n")
-
-        f.write("\nSample item scores (higher = reused sooner = keep):\n")
+        f.write("Sample item scores (higher = reused sooner = keep):\n")
         for i, s in enumerate(scores):
             f.write(f"  Item {i}: score = {s:.4f}\n")
 
         f.write(f"\nEviction order (first to evict -> last):\n")
         f.write(f"  {list(order)}\n")
 
-    typer.echo(f"Saved evaluation report → {eval_path}")
+    typer.echo(f"Evaluation report → {eval_path}")

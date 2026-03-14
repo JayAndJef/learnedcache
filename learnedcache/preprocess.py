@@ -43,31 +43,41 @@ def generate_pair_diffs(
     """
     Generate pairwise training data as feature differences (vectorized).
 
+    Efficiently samples pairs by grouping samples by their label values,
+    then sampling across different groups to avoid ties.
+
     Returns
     -------
-    X_diff : np.ndarray, shape (n_valid_pairs, n_features)
-    labels : np.ndarray, shape (n_valid_pairs,)
+    X_diff : np.ndarray, shape (n_pairs, n_features)
+    labels : np.ndarray, shape (n_pairs,)
         1.0 if A reused sooner, 0.0 otherwise.
     """
     rng = np.random.RandomState(seed)
     n = len(X_np)
 
-    idx_a = rng.randint(0, n, size=n_pairs)
-    idx_b = rng.randint(0, n, size=n_pairs)
+    unique_y, inverse_indices = np.unique(Y_np, return_inverse=True)
+    n_unique = len(unique_y)
 
-    same = idx_a == idx_b
-    while same.any():
-        idx_b[same] = rng.randint(0, n, size=same.sum())
-        same = idx_a == idx_b
+    if n_unique == 1:
+        raise ValueError(
+            f"Cannot generate pairs: all {n} samples have the same label value. "
+            "No non-tie pairs are possible."
+        )
+
+    groups = [np.where(inverse_indices == i)[0] for i in range(n_unique)]
+    group_sizes = np.array([len(g) for g in groups])
+
+    idx_a = np.empty(n_pairs, dtype=np.int64)
+    idx_b = np.empty(n_pairs, dtype=np.int64)
+
+    for i in range(n_pairs):
+        group_a, group_b = rng.choice(n_unique, size=2, replace=False)
+
+        idx_a[i] = rng.choice(groups[group_a])
+        idx_b[i] = rng.choice(groups[group_b])
 
     y_a = Y_np[idx_a]
     y_b = Y_np[idx_b]
-
-    mask = y_a != y_b
-    idx_a = idx_a[mask]
-    idx_b = idx_b[mask]
-    y_a = y_a[mask]
-    y_b = y_b[mask]
 
     X_diff = X_np[idx_a] - X_np[idx_b]
     labels = (y_a < y_b).astype(np.float32)
