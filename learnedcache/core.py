@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from keras.callbacks import EarlyStopping
 from sklearn.metrics import accuracy_score, classification_report
-from sklearn.model_selection import train_test_split
+
 
 from learnedcache.loading import read_csvs_to_dataframe, transform_logs_to_csvs
 from learnedcache.preprocess import one_hot_encode_features, generate_pair_diffs, train_and_transform_discretizer
@@ -82,14 +82,29 @@ def run_train_ranker(
     Y_np = Y.values
 
     # ------------------------------------------------------------------
-    # 3. Split Data (BEFORE discretization to avoid data leakage)
+    # 3. Split Data (train on all trials except last; test on last trial)
     # ------------------------------------------------------------------
+    trial_ids = np.sort(df["trial_id"].unique())
+    if len(trial_ids) < 2:
+        raise ValueError(
+            "Need at least 2 trials for holdout split (train=all but last, test=last)."
+        )
+
+    test_trial_id = trial_ids[-1]
+    train_trials = trial_ids[:-1]
+
+    train_idx = np.where(df["trial_id"].isin(train_trials).values)[0]
+    test_idx = np.where((df["trial_id"] == test_trial_id).values)[0]
+
+    if len(train_idx) == 0 or len(test_idx) == 0:
+        raise ValueError(
+            "Invalid trial split produced empty train or test set."
+        )
+
     if verbose:
-        print("Splitting data randomly (80/20)...")
-    train_idx, test_idx = train_test_split(
-        np.arange(len(df)), test_size=0.2, random_state=random_state
-    )
-    if verbose:
+        print(
+            f"Split by trial_id: train={train_trials.tolist()} | test={[int(test_trial_id)]}"
+        )
         print(f"  Train rows: {len(train_idx)}  |  Test rows: {len(test_idx)}")
 
     # ------------------------------------------------------------------
@@ -126,6 +141,9 @@ def run_train_ranker(
 
     Y_train_raw = Y_np[train_idx]
     Y_test_raw = Y_np[test_idx]
+    context_ids = df["trial_id"].values
+    train_context_ids = context_ids[train_idx]
+    test_context_ids = context_ids[test_idx]
 
     # ------------------------------------------------------------------
     # 6. Generate Pairwise Training Data
@@ -136,10 +154,18 @@ def run_train_ranker(
     N_TEST_PAIRS = int(len(Y_test_raw) * sampling_multiplier)
 
     X_diff_train, Y_train_pairs = generate_pair_diffs(
-        X_train_full, Y_train_raw, N_TRAIN_PAIRS, seed=random_state
+        X_train_full,
+        Y_train_raw,
+        N_TRAIN_PAIRS,
+        seed=random_state,
+        context_ids=train_context_ids,
     )
     X_diff_test, Y_test_pairs = generate_pair_diffs(
-        X_test_full, Y_test_raw, N_TEST_PAIRS, seed=random_state
+        X_test_full,
+        Y_test_raw,
+        N_TEST_PAIRS,
+        seed=random_state,
+        context_ids=test_context_ids,
     )
 
     if verbose:
