@@ -220,7 +220,7 @@ def run_train_ranker(
     n_bins: int = 10,
     max_epochs: int = 50,
     batch_size: int = 256,
-    pairs_per_event: int = 64,
+    pairs_per_event: int = 512,
     max_pairs_total: int | None = None,
     random_state: int = 42,
     verbose: bool = True,

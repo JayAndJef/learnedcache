@@ -37,7 +37,7 @@ def train_ranker(
     batch_size: Annotated[int, typer.Option(help="Training batch size")] = 256,
     pairs_per_event: Annotated[
         int, typer.Option(help="Sampled pair count per (trial_id, eviction_ts) event")
-    ] = 64,
+    ] = 512,
     max_pairs_total: Annotated[
         int | None, typer.Option(help="Optional cap on total sampled pairs")
     ] = None,
@@ -98,7 +98,7 @@ def train_and_export(
     batch_size: Annotated[int, typer.Option(help="Training batch size")] = 256,
     pairs_per_event: Annotated[
         int, typer.Option(help="Sampled pair count per (trial_id, eviction_ts) event")
-    ] = 64,
+    ] = 512,
     max_pairs_total: Annotated[
         int | None, typer.Option(help="Optional cap on total sampled pairs")
     ] = None,
@@ -166,7 +166,7 @@ def full_pipeline(
     batch_size: Annotated[int, typer.Option(help="Training batch size")] = 256,
     pairs_per_event: Annotated[
         int, typer.Option(help="Sampled pair count per (trial_id, eviction_ts) event")
-    ] = 64,
+    ] = 512,
     max_pairs_total: Annotated[
         int | None, typer.Option(help="Optional cap on total sampled pairs")
     ] = None,
