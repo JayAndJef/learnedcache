@@ -1,0 +1,45 @@
+============================================================
+Eviction-Time Pairwise-Diff Ranker Evaluation Report
+============================================================
+
+Objective: pairwise_diff
+Access pattern: data/training/varmail/*_access.csv
+Eviction pattern: data/training/varmail/*_eviction.csv
+Total supervised rows: 4810635
+Training rows: 3946347
+Test rows: 864288
+Training pairs: 1638458
+Test pairs: 343812
+Epochs trained: 8
+Pairwise accuracy: 0.6213
+
+Train pair stats: {'events_total': 3476, 'events_with_pairs': 3476, 'sampled_before_tie_drop': 1779712, 'ties_dropped': 141254, 'pairs_after_tie_drop': 1638458}
+Test pair stats: {'events_total': 715, 'events_with_pairs': 715, 'sampled_before_tie_drop': 366080, 'ties_dropped': 22268, 'pairs_after_tie_drop': 343812}
+
+Weight vector shape: (65,)
+Weight vector: [ 0.25811222  0.02838978 -0.01381807 -0.43543023 -0.87112683  0.18538076
+  0.15296562 -0.02772611 -0.1953824  -0.2691852  -0.06330521 -0.04199528
+ -0.09283123  0.02768218 -0.26701063  0.28658146  0.06792378  0.4333825
+ -0.2628118  -0.6275242   0.00556504  0.03232622 -0.35169014  0.1779855
+ -0.22218324  0.06624948 -0.25527066  0.06644542 -0.17744377 -0.12924999
+ -0.09691573 -0.40086943 -0.11563578 -0.32241994  0.22986314  0.37162742
+ -0.14388223 -0.5384933  -0.1737166  -0.34465897 -0.05192136 -0.2915218
+ -0.6181493  -0.28555813  0.71599406 -0.07825122  0.0548288   0.53320074
+  0.37183753 -0.09885646  0.03110947 -0.02506196 -0.18507735 -0.50982225
+ -0.07385848 -1.1299936  -0.737801   -0.4202186  -0.1393993   0.14700826
+  0.22815196  0.27471924  0.37861493  0.918072    0.5962109 ]
+
+Sample pairwise probabilities (A reused sooner):
+  Item 0: p = 0.3927
+  Item 1: p = 0.6073
+  Item 2: p = 0.8767
+  Item 3: p = 0.9172
+  Item 4: p = 0.4996
+  Item 5: p = 0.6073
+  Item 6: p = 0.5004
+  Item 7: p = 0.1181
+  Item 8: p = 0.4008
+  Item 9: p = 0.1233
+
+Sample ascending probability order (low -> high):
+  [np.int64(7), np.int64(9), np.int64(0), np.int64(8), np.int64(4), np.int64(6), np.int64(1), np.int64(5), np.int64(2), np.int64(3)]

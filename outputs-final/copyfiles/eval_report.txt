@@ -1,0 +1,43 @@
+============================================================
+Eviction-Time Pairwise-Diff Ranker Evaluation Report
+============================================================
+
+Objective: pairwise_diff
+Access pattern: data/training/copyfiles/*_access.csv
+Eviction pattern: data/training/copyfiles/*_eviction.csv
+Total supervised rows: 4552937
+Training rows: 3536326
+Test rows: 1016611
+Training pairs: 8479
+Test pairs: 2387
+Epochs trained: 50
+Pairwise accuracy: 0.9845
+
+Train pair stats: {'events_total': 1278, 'events_with_pairs': 1278, 'sampled_before_tie_drop': 654336, 'ties_dropped': 645857, 'pairs_after_tie_drop': 8479}
+Test pair stats: {'events_total': 361, 'events_with_pairs': 361, 'sampled_before_tie_drop': 184832, 'ties_dropped': 182445, 'pairs_after_tie_drop': 2387}
+
+Weight vector shape: (50,)
+Weight vector: [ 0.42132932  0.7386375  -0.4242365  -0.9116853  -0.8517975  -0.6625401
+ -0.50488997 -0.99926853 -0.93561953 -0.8647779   0.2370089  -0.21487673
+ -0.82150847  0.5012922  -0.02395326  0.166069    0.4625614  -0.6325556
+ -0.66901624 -0.6078468  -0.6869367  -0.20192593 -0.05517236  0.61839604
+ -0.31294668 -0.28587443  0.7947817  -0.44594273 -0.61843634 -0.6233467
+  0.74334234  0.83212507 -0.4062507  -0.5804126  -0.68938214 -0.5194407
+ -0.23784357 -0.55946654 -0.43769914  0.41362476 -1.1347563  -0.99117386
+ -0.4538344  -0.48654866 -0.36996597 -0.40186948 -0.38966492 -0.19649678
+  0.02852372  0.8002981 ]
+
+Sample pairwise probabilities (A reused sooner):
+  Item 0: p = 0.0024
+  Item 1: p = 0.9815
+  Item 2: p = 0.9787
+  Item 3: p = 0.0097
+  Item 4: p = 0.9850
+  Item 5: p = 0.0326
+  Item 6: p = 0.1286
+  Item 7: p = 0.0015
+  Item 8: p = 0.9211
+  Item 9: p = 0.9971
+
+Sample ascending probability order (low -> high):
+  [np.int64(7), np.int64(0), np.int64(3), np.int64(5), np.int64(6), np.int64(8), np.int64(2), np.int64(1), np.int64(4), np.int64(9)]
