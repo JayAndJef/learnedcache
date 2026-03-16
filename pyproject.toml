@@ -21,4 +21,5 @@ learnedcache = "learnedcache.cli:app"
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
+    "pytest>=8.3.0",
 ]
