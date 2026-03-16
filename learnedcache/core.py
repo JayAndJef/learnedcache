@@ -148,84 +148,69 @@ def _sample_pairwise_diffs_by_event(
     random_state: int,
     max_pairs_total: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
-    """
-    Sample pairwise diffs within each event only.
-
-    Event is typically (trial_id, eviction_ts). Ties are dropped (y_a == y_b).
-    """
     if pairs_per_event <= 0:
         raise ValueError("pairs_per_event must be > 0.")
 
     rng = np.random.RandomState(random_state)
 
-    x_parts: list[np.ndarray] = []
-    y_parts: list[np.ndarray] = []
+    sort_idx = np.argsort(event_ids)
+    x_sorted = x_full[sort_idx]
+    y_sorted = y_full[sort_idx]
 
-    events_total = 0
-    events_with_pairs = 0
-    ties_dropped = 0
-    sampled_before_tie_drop = 0
+    unique_vals, first_indices, counts = np.unique(
+        event_ids[sort_idx], return_index=True, return_counts=True
+    )
 
-    unique_events = np.unique(event_ids)
-    for event_id in unique_events:
-        events_total += 1
-        local_idx = np.where(event_ids == event_id)[0]
-        n = len(local_idx)
-        if n < 2:
-            continue
+    valid_mask = counts >= 2
+    first_indices = first_indices[valid_mask]
+    counts = counts[valid_mask]
 
-        idx_a_local = rng.randint(0, n, size=pairs_per_event)
-        idx_b_local = rng.randint(0, n, size=pairs_per_event)
+    if len(counts) == 0:
+        raise ValueError("No events with >= 2 samples found.")
 
+    total_requested = len(counts) * pairs_per_event
+    offsets = np.repeat(first_indices, pairs_per_event)
+    ns = np.repeat(counts, pairs_per_event)
+
+    idx_a_local = (rng.rand(total_requested) * ns).astype(int)
+    idx_b_local = (rng.rand(total_requested) * ns).astype(int)
+
+    same = idx_a_local == idx_b_local
+    while same.any():
+        idx_b_local[same] = (rng.rand(same.sum()) * ns[same]).astype(int)
         same = idx_a_local == idx_b_local
-        while same.any():
-            idx_b_local[same] = rng.randint(0, n, size=int(same.sum()))
-            same = idx_a_local == idx_b_local
 
-        idx_a = local_idx[idx_a_local]
-        idx_b = local_idx[idx_b_local]
+    idx_a = idx_a_local + offsets
+    idx_b = idx_b_local + offsets
 
-        y_a = y_full[idx_a]
-        y_b = y_full[idx_b]
+    y_a, y_b = y_sorted[idx_a], y_sorted[idx_b]
+    mask = y_a != y_b
+    ties_dropped = int((~mask).sum())
 
-        sampled_before_tie_drop += len(idx_a)
+    idx_a, idx_b = idx_a[mask], idx_b[mask]
+    y_a, y_b = y_a[mask], y_b[mask]
 
-        mask = y_a != y_b
-        ties_dropped += int((~mask).sum())
-        if not mask.any():
-            continue
+    if len(y_a) == 0:
+        raise ValueError("No pairwise samples generated after tie-drop.")
 
-        idx_a = idx_a[mask]
-        idx_b = idx_b[mask]
-        y_a = y_a[mask]
-        y_b = y_b[mask]
+    if max_pairs_total is not None and 0 < max_pairs_total < len(y_a):
+        keep = rng.choice(len(y_a), size=max_pairs_total, replace=False)
+        idx_a, idx_b = idx_a[keep], idx_b[keep]
+        y_a, y_b = y_a[keep], y_b[keep]
 
-        x_diff = x_full[idx_a] - x_full[idx_b]
-        labels = (y_a < y_b).astype(np.float32)
-
-        x_parts.append(x_diff.astype(np.float32, copy=False))
-        y_parts.append(labels)
-        events_with_pairs += 1
-
-    if not x_parts:
-        raise ValueError("No pairwise samples generated after tie-drop; cannot train pairwise ranker.")
-
-    x_out = np.concatenate(x_parts, axis=0)
-    y_out = np.concatenate(y_parts, axis=0)
-
-    if max_pairs_total is not None and max_pairs_total > 0 and len(y_out) > max_pairs_total:
-        keep = rng.choice(len(y_out), size=max_pairs_total, replace=False)
-        x_out = x_out[keep]
-        y_out = y_out[keep]
+    x_out = (x_sorted[idx_a] - x_sorted[idx_b]).astype(np.float32)
+    y_out = (y_a < y_b).astype(np.float32)
 
     stats = {
-        "events_total": events_total,
-        "events_with_pairs": events_with_pairs,
-        "sampled_before_tie_drop": sampled_before_tie_drop,
+        "events_total": len(unique_vals),
+        "events_with_pairs": len(counts),
+        "sampled_before_tie_drop": total_requested,
         "ties_dropped": ties_dropped,
-        "pairs_after_tie_drop": int(len(y_out)),
+        "pairs_after_tie_drop": len(y_out),
     }
+
     return x_out, y_out, stats
+
 
 def run_train_ranker(
     access_pattern: str,
