@@ -62,68 +62,67 @@ def _build_eviction_supervised_df(
     eviction_required = [TS_COL]
 
     for trial_id, access_df, eviction_df in access_eviction_pairs:
-        _validate_required_columns(
-            access_df, access_required, f"access trial {trial_id}"
-        )
-        _validate_required_columns(
-            eviction_df, eviction_required, f"eviction trial {trial_id}"
-        )
+        _validate_required_columns(access_df, access_required, f"access trial {trial_id}")
+        _validate_required_columns(eviction_df, eviction_required, f"eviction trial {trial_id}")
 
-        access_df = _require_numeric(
-            access_df, [TS_COL, *discretize_cols], f"access trial {trial_id}"
-        )
-        eviction_df = _require_numeric(
-            eviction_df, [TS_COL], f"eviction trial {trial_id}"
-        )
+        access_df = _require_numeric(access_df, [TS_COL, *discretize_cols], f"access trial {trial_id}")
+        eviction_df = _require_numeric(eviction_df, [TS_COL], f"eviction trial {trial_id}")
 
         access_sorted = access_df.sort_values(TS_COL).reset_index(drop=True)
         eviction_sorted = eviction_df.sort_values(TS_COL).reset_index(drop=True)
 
         unique_pages = access_sorted[PAGE_KEY_COLS].drop_duplicates()
-        eviction_expanded = eviction_sorted.merge(
-            unique_pages, how="cross"
-        ).sort_values(TS_COL)
+        
+        chunk_size = 50
+        trial_results = []
+        
+        for i in range(0, len(unique_pages), chunk_size):
+            page_chunk = unique_pages.iloc[i:i+chunk_size]
+            eviction_expanded = eviction_sorted.merge(
+                page_chunk, how="cross"
+            ).sort_values(TS_COL)
 
-        features_df = pd.merge_asof(
-            eviction_expanded,
-            access_sorted.rename(columns={TS_COL: "last_access_ts"}),
-            left_on=TS_COL,
-            right_on="last_access_ts",
-            by=PAGE_KEY_COLS,
-            direction="backward",
-        )
+            features_df = pd.merge_asof(
+                eviction_expanded,
+                access_sorted.rename(columns={TS_COL: "last_access_ts"}),
+                left_on=TS_COL,
+                right_on="last_access_ts",
+                by=PAGE_KEY_COLS,
+                direction="backward",
+            )
 
-        labels_df = pd.merge_asof(
-            eviction_expanded,
-            access_sorted[PAGE_KEY_COLS + [TS_COL]].rename(
-                columns={TS_COL: "next_access_ts"}
-            ),
-            left_on=TS_COL,
-            right_on="next_access_ts",
-            by=PAGE_KEY_COLS,
-            direction="forward",
-            allow_exact_matches=False,
-        )
+            labels_df = pd.merge_asof(
+                eviction_expanded,
+                access_sorted[PAGE_KEY_COLS + [TS_COL]].rename(
+                    columns={TS_COL: "next_access_ts"}
+                ),
+                left_on=TS_COL,
+                right_on="next_access_ts",
+                by=PAGE_KEY_COLS,
+                direction="forward",
+                allow_exact_matches=False,
+            )
 
-        trial_result = features_df.copy()
-        trial_result["next_access_ts"] = labels_df["next_access_ts"]
-        trial_result["trial_id"] = trial_id
-        trial_result["eviction_ts"] = trial_result[TS_COL]
+            chunk_result = features_df.copy()
+            chunk_result["next_access_ts"] = labels_df["next_access_ts"]
+            chunk_result["trial_id"] = trial_id
+            chunk_result["eviction_ts"] = chunk_result[TS_COL]
 
-        trial_result[DERIVED_FEATURE_COL] = (
-            trial_result["eviction_ts"] - trial_result["last_access_ts"]
-        )
-        trial_result[TARGET_COL] = (
-            trial_result["next_access_ts"] - trial_result["eviction_ts"]
-        )
+            chunk_result[DERIVED_FEATURE_COL] = (
+                chunk_result["eviction_ts"] - chunk_result["last_access_ts"]
+            )
+            chunk_result[TARGET_COL] = (
+                chunk_result["next_access_ts"] - chunk_result["eviction_ts"]
+            )
 
-        trial_result = trial_result.dropna(subset=[DERIVED_FEATURE_COL])
-        all_dfs.append(trial_result)
+            chunk_result = chunk_result.dropna(subset=[DERIVED_FEATURE_COL])
+            trial_results.append(chunk_result)
+
+        if trial_results:
+            all_dfs.append(pd.concat(trial_results, ignore_index=True))
 
     if not all_dfs:
-        raise ValueError(
-            "No supervised rows were generated from access+eviction streams."
-        )
+        raise ValueError("No supervised rows were generated from access+eviction streams.")
 
     supervised_df = pd.concat(all_dfs, ignore_index=True)
 
