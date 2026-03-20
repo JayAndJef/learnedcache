@@ -6,7 +6,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, classification_report
 
 plt.style.use("seaborn-v0_8-paper")
 sns.set_palette("pastel")
@@ -111,15 +111,23 @@ def save_evaluation_report(
     n_test_pairs: int = 0,
     train_pair_stats: dict[str, int] | None = None,
     test_pair_stats: dict[str, int] | None = None,
+    y_true: np.ndarray | None = None,
 ) -> None:
-    """Save pairwise evaluation report with feature importance and sample scores."""
+    """Save pairwise evaluation report with feature importance and sample scores.
+
+    Produces a human-readable eval_report.txt that matches the format used in
+    outputs/createdelete-swing/eval_report.txt.
+    """
+    # Learned weight vector (linear, before sigmoid)
     weights = model.get_layer("ranking_weight").get_weights()[0].ravel()
 
+    # Build feature bin names for plotting
     feature_names: list[str] = []
     for col, n_bins in zip(column_names, n_bins_list):
         for bin_idx in range(n_bins):
             feature_names.append(f"{col}_bin{bin_idx}")
 
+    # Feature importance plot (unchanged)
     fig_w, ax_w = plt.subplots(figsize=(25, 10))
     colors = ["#d62728" if v < 0 else "#2ca02c" for v in weights]
     ax_w.bar(range(len(weights)), weights, color=colors)
@@ -137,37 +145,62 @@ def save_evaluation_report(
     print(f"Feature importance → {importance_path}")
 
     sample_items = x_eval_full[:10]
-    scores = model.predict(sample_items, verbose=0).ravel() if len(sample_items) > 0 else np.array([])
-    order = np.argsort(scores) if len(scores) > 0 else np.array([], dtype=int)
+    if len(sample_items) > 0:
+        raw_sample_scores = np.dot(sample_items, weights)
+        probs_sample = 1.0 / (1.0 + np.exp(-raw_sample_scores))
+    else:
+        raw_sample_scores = np.array([])
+        probs_sample = np.array([])
+
+    if y_true is not None and len(x_eval_full) > 0:
+        raw_full_scores = np.dot(x_eval_full, weights)
+        probs_full = 1.0 / (1.0 + np.exp(-raw_full_scores))
+        preds_full = (probs_full >= 0.5).astype(int)
+        try:
+            cls_report_str = classification_report(
+                y_true,
+                preds_full,
+                target_names=["B reused sooner", "A reused sooner"],
+                digits=2,
+            )
+        except Exception:
+            cls_report_str = "Classification report could not be computed.\n"
+    else:
+        cls_report_str = "No true labels supplied for classification report.\n"
+
+    order = np.argsort(raw_sample_scores) if len(raw_sample_scores) > 0 else np.array([], dtype=int)
 
     eval_path = output_dir / "eval_report.txt"
     with eval_path.open("w", encoding="utf-8") as f:
         f.write("=" * 60 + "\n")
-        f.write("Eviction-Time Pairwise-Diff Ranker Evaluation Report\n")
+        f.write("Pairwise Ranker Evaluation Report\n")
         f.write("=" * 60 + "\n\n")
 
-        f.write(f"Objective: {objective}\n")
-        f.write(f"Access pattern: {access_pattern}\n")
-        f.write(f"Eviction pattern: {eviction_pattern}\n")
-        f.write(f"Total supervised rows: {n_rows}\n")
-        f.write(f"Training rows: {n_train_rows}\n")
-        f.write(f"Test rows: {n_test_rows}\n")
+        f.write(f"File pattern: {access_pattern}\n")
+        f.write(f"Total rows loaded: {n_rows}\n")
         f.write(f"Training pairs: {n_train_pairs}\n")
         f.write(f"Test pairs: {n_test_pairs}\n")
-        f.write(f"Epochs trained: {epochs_trained}\n")
-        f.write(f"Pairwise accuracy: {pairwise_accuracy:.4f}\n\n")
+        f.write(f"Epochs trained: {epochs_trained}\n\n")
 
-        f.write(f"Train pair stats: {train_pair_stats or {}}\n")
-        f.write(f"Test pair stats: {test_pair_stats or {}}\n\n")
+        f.write(f"Pairwise Test Accuracy: {pairwise_accuracy:.4f}\n\n")
+
+        f.write("Classification Report:\n")
+        f.write("                 precision    recall  f1-score   support\n\n")
+        if "No true labels" in cls_report_str:
+            f.write(cls_report_str + "\n")
+        else:
+            f.write(cls_report_str + "\n")
 
         f.write(f"Weight vector shape: {weights.shape}\n")
-        f.write(f"Weight vector: {weights}\n\n")
+        f.write(f"Weight vector: {weights.tolist()}\n\n")
 
-        f.write("Sample pairwise probabilities (A reused sooner):\n")
-        for idx, score in enumerate(scores):
-            f.write(f"  Item {idx}: p = {score:.4f}\n")
+        f.write("Sample item scores (higher = reused sooner = keep):\n")
+        for idx, score in enumerate(raw_sample_scores):
+            f.write(f"  Item {idx}: score = {float(score):.4f}\n")
+        f.write("\n")
 
-        f.write("\nSample ascending probability order (low -> high):\n")
-        f.write(f"  {list(order)}\n")
+        evict_items = ", ".join(f"np.int64({int(x)})" for x in order)
+        f.write("Eviction order (first to evict -> last):\n")
+        f.write(f"  [{evict_items}]\n\n")
 
     print(f"Evaluation report → {eval_path}")

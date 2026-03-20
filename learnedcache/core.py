@@ -407,6 +407,7 @@ def run_train_ranker(
         n_test_pairs=len(y_test_pairs),
         train_pair_stats=train_pair_stats,
         test_pair_stats=test_pair_stats,
+        y_true=y_test_pairs,
     )
 
     if verbose:
