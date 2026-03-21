@@ -337,7 +337,11 @@ def run_train_ranker(
     if verbose:
         print("Building pairwise-diff model...")
     model = build_model(n_encoded_features)
-    model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+    model.compile(
+        optimizer="adam",
+        loss="binary_crossentropy",
+        metrics=["accuracy", keras.metrics.AUC(name="auc")],
+    )
     if verbose:
         model.summary()
 

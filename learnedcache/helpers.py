@@ -6,7 +6,12 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import (
+    auc as sklearn_auc,
+    classification_report,
+    confusion_matrix,
+    roc_curve,
+)
 
 plt.style.use("seaborn-v0_8-paper")
 sns.set_palette("pastel")
@@ -27,71 +32,139 @@ def save_training_visualizations(
     primary_metric: float,
     output_dir: Path,
 ) -> None:
-    """Save pairwise training curves and confusion matrix."""
+    """Save pairwise training curves, ROC curve, and confusion matrix as separate images."""
     train_metric = history.history.get("accuracy", [])
     val_metric = history.history.get("val_accuracy", [])
     train_loss = history.history.get("loss", [])
     val_loss = history.history.get("val_loss", [])
+    train_auc_hist = history.history.get("auc", [])
+    val_auc_hist = history.history.get("val_auc", [])
 
-    y_pred_cls = (np.asarray(y_pred).ravel() >= 0.5).astype(int)
+    y_pred_prob = np.asarray(y_pred).ravel()
+    y_pred_cls = (y_pred_prob >= 0.5).astype(int)
     y_true_cls = np.asarray(y_true).astype(int)
     cm = confusion_matrix(y_true_cls, y_pred_cls, labels=[0, 1])
 
-    with plt.rc_context(
-        {
-            "font.size": 20,
-            "axes.labelsize": 20,
-            "axes.titlesize": 24,
-            "xtick.labelsize": 18,
-            "ytick.labelsize": 18,
-            "legend.fontsize": 18,
-        }
-    ):
-        fig = plt.figure(figsize=(16, 5))
+    fpr, tpr, _ = roc_curve(y_true_cls, y_pred_prob)
+    roc_auc = sklearn_auc(fpr, tpr)
 
-        ax1 = plt.subplot(1, 3, 1)
+    rc = {
+        "font.size": 26,
+        "axes.labelsize": 26,
+        "axes.titlesize": 32,
+        "xtick.labelsize": 24,
+        "ytick.labelsize": 24,
+        "legend.fontsize": 24,
+    }
+
+    # ── Pairwise Ranking Accuracy ─────────────────────────────────────────
+    with plt.rc_context(rc):
+        fig, ax = plt.subplots(figsize=(10, 10))
         if len(train_metric) > 0:
-            ax1.plot(train_metric, label="Train Acc")
+            ax.plot(train_metric, label="Train Acc")
         if len(val_metric) > 0:
-            ax1.plot(val_metric, label="Val Acc")
-        ax1.set_title("Pairwise Ranking Accuracy")
-        ax1.set_xlabel("Epoch")
-        ax1.set_ylabel("Accuracy")
+            ax.plot(val_metric, label="Val Acc")
+        ax.set_title("Accuracy over Epochs")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Accuracy")
         if len(train_metric) > 0 or len(val_metric) > 0:
-            ax1.legend()
-        ax1.grid(True)
+            ax.legend()
+        ax.grid(True)
+        plt.tight_layout()
+        p = output_dir / "accuracy.png"
+        fig.savefig(p)
+        plt.close(fig)
+        print(f"Accuracy curve → {p}")
 
-        ax2 = plt.subplot(1, 3, 2)
+    # ── Live AUC per Epoch ────────────────────────────────────────────────
+    with plt.rc_context(rc):
+        fig, ax = plt.subplots(figsize=(10, 10))
+        if len(train_auc_hist) > 0:
+            ax.plot(train_auc_hist, label="Train AUC")
+        if len(val_auc_hist) > 0:
+            ax.plot(val_auc_hist, label="Val AUC")
+        ax.set_title("AUC over Epochs")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("AUC")
+        if len(train_auc_hist) > 0 or len(val_auc_hist) > 0:
+            ax.legend()
+        ax.grid(True)
+        plt.tight_layout()
+        p = output_dir / "live_auc.png"
+        fig.savefig(p)
+        plt.close(fig)
+        print(f"Live AUC curve → {p}")
+
+    # ── Pairwise BCE Loss ─────────────────────────────────────────────────
+    with plt.rc_context(rc):
+        fig, ax = plt.subplots(figsize=(10, 10))
         if len(train_loss) > 0:
-            ax2.plot(train_loss, label="Train Loss")
+            ax.plot(train_loss, label="Train Loss")
         if len(val_loss) > 0:
-            ax2.plot(val_loss, label="Val Loss")
-        ax2.set_title("Pairwise BCE Loss")
-        ax2.set_xlabel("Epoch")
-        ax2.set_ylabel("Loss")
+            ax.plot(val_loss, label="Val Loss")
+        ax.set_title("Loss over Epochs")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
         if len(train_loss) > 0 or len(val_loss) > 0:
-            ax2.legend()
-        ax2.grid(True)
+            ax.legend()
+        ax.grid(True)
+        plt.tight_layout()
+        p = output_dir / "loss.png"
+        fig.savefig(p)
+        plt.close(fig)
+        print(f"Loss curve → {p}")
 
-        ax3 = plt.subplot(1, 3, 3)
+    # ── ROC Curve ─────────────────────────────────────────────────────────
+    with plt.rc_context(rc):
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.plot(fpr, tpr, label=f"ROC Curve (AUC = {roc_auc:.4f})", linewidth=2)
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1, label="Random")
+        ax.set_title(f"ROC Curve  —  AUC: {roc_auc:.4f}")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.05)
+        ax.legend(loc="lower right")
+        ax.grid(True)
+        plt.tight_layout()
+        p = output_dir / "roc_curve.png"
+        fig.savefig(p)
+        plt.close(fig)
+        print(f"ROC curve → {p}")
+
+    # ── Confusion Matrix ──────────────────────────────────────────────────
+    with plt.rc_context(rc):
+        fig, ax = plt.subplots(figsize=(10, 10))
         sns.heatmap(
             cm,
             annot=True,
             fmt="d",
             cmap="Blues",
-            ax=ax3,
+            ax=ax,
             xticklabels=["B sooner", "A sooner"],
             yticklabels=["B sooner", "A sooner"],
         )
-        ax3.set_title(f"Confusion Matrix\nAccuracy: {primary_metric:.4f}")
-        ax3.set_ylabel("True")
-        ax3.set_xlabel("Predicted")
-
+        ax.set_title(f"Confusion Matrix\nAcc: {primary_metric:.4f}  AUC: {roc_auc:.4f}")
+        ax.set_ylabel("True")
+        ax.set_xlabel("Predicted")
         plt.tight_layout()
-        fig_path = output_dir / "training_curves.png"
-        fig.savefig(fig_path)
+        p = output_dir / "confusion_matrix.png"
+        fig.savefig(p)
         plt.close(fig)
-        print(f"Training visualizations → {fig_path}")
+        print(f"Confusion matrix → {p}")
+
+_ABBREV_SKIP = {"since", "at", "from", "of", "in", "the", "a", "an", "access", "by", "to", "for"}
+
+def _col_abbrev(name: str) -> str:
+    """Shorten a column name to initials, skipping common connector words.
+
+    Single-word / already-short names (no underscores) are returned as-is.
+    Example: 'time_since_last_access_at_eviction' -> 'tle'
+    """
+    parts = name.split("_")
+    if len(parts) == 1:
+        return name
+    return "".join(p[0] for p in parts if p not in _ABBREV_SKIP)
 
 def save_evaluation_report(
     model: Any,
@@ -124,15 +197,16 @@ def save_evaluation_report(
     # Build feature bin names for plotting
     feature_names: list[str] = []
     for col, n_bins in zip(column_names, n_bins_list):
+        abbrev = _col_abbrev(col)
         for bin_idx in range(n_bins):
-            feature_names.append(f"{col}_bin{bin_idx}")
+            feature_names.append(f"{abbrev}_bin{bin_idx}")
 
-    # Feature importance plot (unchanged)
+    # Feature importance plot
     fig_w, ax_w = plt.subplots(figsize=(25, 10))
     colors = ["#d62728" if v < 0 else "#2ca02c" for v in weights]
     ax_w.bar(range(len(weights)), weights, color=colors)
     ax_w.set_xticks(range(len(weights)))
-    ax_w.set_xticklabels(feature_names, rotation=90, fontsize=8)
+    ax_w.set_xticklabels(feature_names, rotation=90, fontsize=14)
     ax_w.set_ylabel("Weight")
     ax_w.set_title("Learned Pairwise Ranking Weights")
     ax_w.axhline(y=0, color="black", linewidth=0.5)
@@ -152,10 +226,16 @@ def save_evaluation_report(
         raw_sample_scores = np.array([])
         probs_sample = np.array([])
 
+    roc_auc_score: float | None = None
     if y_true is not None and len(x_eval_full) > 0:
         raw_full_scores = np.dot(x_eval_full, weights)
         probs_full = 1.0 / (1.0 + np.exp(-raw_full_scores))
         preds_full = (probs_full >= 0.5).astype(int)
+        try:
+            fpr_r, tpr_r, _ = roc_curve(y_true.astype(int), probs_full)
+            roc_auc_score = float(sklearn_auc(fpr_r, tpr_r))
+        except Exception:
+            roc_auc_score = None
         try:
             cls_report_str = classification_report(
                 y_true,
@@ -182,7 +262,10 @@ def save_evaluation_report(
         f.write(f"Test pairs: {n_test_pairs}\n")
         f.write(f"Epochs trained: {epochs_trained}\n\n")
 
-        f.write(f"Pairwise Test Accuracy: {pairwise_accuracy:.4f}\n\n")
+        f.write(f"Pairwise Test Accuracy: {pairwise_accuracy:.4f}\n")
+        if roc_auc_score is not None:
+            f.write(f"Pairwise Test AUC:      {roc_auc_score:.4f}\n")
+        f.write("\n")
 
         f.write("Classification Report:\n")
         f.write("                 precision    recall  f1-score   support\n\n")
