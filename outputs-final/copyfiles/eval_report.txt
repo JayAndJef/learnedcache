@@ -1,43 +1,43 @@
 ============================================================
-Eviction-Time Pairwise-Diff Ranker Evaluation Report
+Pairwise Ranker Evaluation Report
 ============================================================
 
-Objective: pairwise_diff
-Access pattern: data/training/copyfiles/*_access.csv
-Eviction pattern: data/training/copyfiles/*_eviction.csv
-Total supervised rows: 4552937
-Training rows: 3536326
-Test rows: 1016611
-Training pairs: 8479
-Test pairs: 2387
+File pattern: data/training/copyfiles/*_access.csv
+Total rows loaded: 4662057
+Training pairs: 8933
+Test pairs: 2397
 Epochs trained: 50
-Pairwise accuracy: 0.9845
 
-Train pair stats: {'events_total': 1278, 'events_with_pairs': 1278, 'sampled_before_tie_drop': 654336, 'ties_dropped': 645857, 'pairs_after_tie_drop': 8479}
-Test pair stats: {'events_total': 361, 'events_with_pairs': 361, 'sampled_before_tie_drop': 184832, 'ties_dropped': 182445, 'pairs_after_tie_drop': 2387}
+Pairwise Test Accuracy: 0.9866
+Pairwise Test AUC:      0.9993
+
+Classification Report:
+                 precision    recall  f1-score   support
+
+                 precision    recall  f1-score   support
+
+B reused sooner       0.98      0.99      0.99      1191
+A reused sooner       0.99      0.98      0.99      1206
+
+       accuracy                           0.99      2397
+      macro avg       0.99      0.99      0.99      2397
+   weighted avg       0.99      0.99      0.99      2397
 
 Weight vector shape: (50,)
-Weight vector: [ 0.42132932  0.7386375  -0.4242365  -0.9116853  -0.8517975  -0.6625401
- -0.50488997 -0.99926853 -0.93561953 -0.8647779   0.2370089  -0.21487673
- -0.82150847  0.5012922  -0.02395326  0.166069    0.4625614  -0.6325556
- -0.66901624 -0.6078468  -0.6869367  -0.20192593 -0.05517236  0.61839604
- -0.31294668 -0.28587443  0.7947817  -0.44594273 -0.61843634 -0.6233467
-  0.74334234  0.83212507 -0.4062507  -0.5804126  -0.68938214 -0.5194407
- -0.23784357 -0.55946654 -0.43769914  0.41362476 -1.1347563  -0.99117386
- -0.4538344  -0.48654866 -0.36996597 -0.40186948 -0.38966492 -0.19649678
-  0.02852372  0.8002981 ]
+Weight vector: [0.9749962687492371, 1.103395938873291, -0.5967028737068176, -0.6558039784431458, -0.6269516944885254, -0.8345648050308228, -0.9482960104942322, -0.9925261735916138, -0.56267911195755, -0.4952705204486847, 0.1668320596218109, 0.0870920717716217, -1.2751965522766113, 0.18415948748588562, -0.1986345499753952, -0.25233423709869385, 0.14027433097362518, -0.9252374172210693, -0.7443671822547913, -0.5954856276512146, -0.5255792737007141, -0.1578591912984848, -0.2572368383407593, 0.47833016514778137, -0.47232943773269653, -0.7539800405502319, 0.3304528295993805, -0.6375502347946167, -0.09791995584964752, 0.08256244659423828, 0.2830656170845032, 0.8108217120170593, -0.954728364944458, -0.25661590695381165, -0.4223814308643341, -0.30402079224586487, -0.4120694696903229, -0.7795003652572632, -0.2574854791164398, 0.6558611989021301, -0.7034364938735962, -0.8865875005722046, -0.9429203867912292, -0.5543402433395386, -0.4939521551132202, -0.6763244271278381, -0.7570393085479736, -0.305418998003006, -0.23503592610359192, 0.4871157705783844]
 
-Sample pairwise probabilities (A reused sooner):
-  Item 0: p = 0.0024
-  Item 1: p = 0.9815
-  Item 2: p = 0.9787
-  Item 3: p = 0.0097
-  Item 4: p = 0.9850
-  Item 5: p = 0.0326
-  Item 6: p = 0.1286
-  Item 7: p = 0.0015
-  Item 8: p = 0.9211
-  Item 9: p = 0.9971
+Sample item scores (higher = reused sooner = keep):
+  Item 0: score = 3.8924
+  Item 1: score = 6.2559
+  Item 2: score = -1.7721
+  Item 3: score = 1.5312
+  Item 4: score = 4.9169
+  Item 5: score = 4.9290
+  Item 6: score = -5.7416
+  Item 7: score = -5.8337
+  Item 8: score = -6.2559
+  Item 9: score = 6.4093
 
-Sample ascending probability order (low -> high):
-  [np.int64(7), np.int64(0), np.int64(3), np.int64(5), np.int64(6), np.int64(8), np.int64(2), np.int64(1), np.int64(4), np.int64(9)]
+Eviction order (first to evict -> last):
+  [np.int64(8), np.int64(7), np.int64(6), np.int64(2), np.int64(3), np.int64(0), np.int64(4), np.int64(5), np.int64(1), np.int64(9)]
+

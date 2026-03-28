@@ -1,47 +1,43 @@
 ============================================================
-Eviction-Time Pairwise-Diff Ranker Evaluation Report
+Pairwise Ranker Evaluation Report
 ============================================================
 
-Objective: pairwise_diff
-Access pattern: data/training/mongo/*_access.csv
-Eviction pattern: data/training/mongo/*_eviction.csv
-Total supervised rows: 274940
-Training rows: 215068
-Test rows: 59872
-Training pairs: 401105
-Test pairs: 102914
-Epochs trained: 12
-Pairwise accuracy: 0.6965
+File pattern: data/training/mongo/*_access.csv
+Total rows loaded: 245638
+Training pairs: 448297
+Test pairs: 106503
+Epochs trained: 16
 
-Train pair stats: {'events_total': 787, 'events_with_pairs': 787, 'sampled_before_tie_drop': 402944, 'ties_dropped': 1839, 'pairs_after_tie_drop': 401105}
-Test pair stats: {'events_total': 202, 'events_with_pairs': 202, 'sampled_before_tie_drop': 103424, 'ties_dropped': 510, 'pairs_after_tie_drop': 102914}
+Pairwise Test Accuracy: 0.6503
+Pairwise Test AUC:      0.7556
 
-Weight vector shape: (50,)
-Weight vector: [-1.3782655e-01 -1.1467375e+00  5.6890666e-01 -2.7743185e-01
-  3.8323048e-01  2.0169427e-01  4.9006376e-01  1.4912415e-01
- -1.0134163e-01 -1.7662998e-01 -6.3278049e-02 -2.1100938e-03
-  2.0439900e-01 -1.0117928e-01 -2.8450704e-01 -1.5669084e-01
-  5.0922897e-02  6.5834776e-02 -2.1172269e-01 -3.2904083e-01
- -8.0314833e-01 -1.8385927e-01  4.8046741e-01  5.5012196e-02
-  6.1725348e-01 -5.2131094e-02 -6.9503111e-01  4.8533219e-01
- -1.0661192e-02  4.4846673e-02 -8.1840312e-01  9.2740104e-02
-  1.2572870e+00 -8.2485312e-01 -8.7900752e-01 -6.3898098e-01
-  5.8445841e-01  2.6883596e-01 -1.5406407e-01 -5.4657197e-01
- -3.5980287e+00 -1.9963310e+00 -8.6381572e-01  1.4132948e-01
-  1.0457107e+00  1.7506239e+00  2.5873103e+00  3.4421592e+00
-  4.4866095e+00 -2.0544009e+00]
+Classification Report:
+                 precision    recall  f1-score   support
 
-Sample pairwise probabilities (A reused sooner):
-  Item 0: p = 0.4203
-  Item 1: p = 0.5000
-  Item 2: p = 0.4203
-  Item 3: p = 0.4311
-  Item 4: p = 0.5000
-  Item 5: p = 0.6947
-  Item 6: p = 0.0398
-  Item 7: p = 0.3864
-  Item 8: p = 0.5669
-  Item 9: p = 0.5000
+                 precision    recall  f1-score   support
 
-Sample ascending probability order (low -> high):
-  [np.int64(6), np.int64(7), np.int64(0), np.int64(2), np.int64(3), np.int64(1), np.int64(4), np.int64(9), np.int64(8), np.int64(5)]
+B reused sooner       0.68      0.57      0.62     53021
+A reused sooner       0.63      0.73      0.68     53482
+
+       accuracy                           0.65    106503
+      macro avg       0.65      0.65      0.65    106503
+   weighted avg       0.65      0.65      0.65    106503
+
+Weight vector shape: (51,)
+Weight vector: [0.029339386150240898, -0.930425226688385, -0.529116690158844, 0.3604063093662262, -0.0465535931289196, 0.008466447703540325, -0.031143423169851303, -0.13318048417568207, -0.3351575434207916, -0.57256680727005, -0.09197311103343964, 0.16747623682022095, 0.4114465117454529, 0.49924513697624207, -0.4804801344871521, -0.1769919991493225, 0.25218039751052856, -0.6413524150848389, -0.4005989134311676, -0.8158383965492249, 0.5732782483100891, 0.7803007960319519, 0.21275319159030914, -0.45913732051849365, -0.6250199675559998, 0.3824094831943512, 0.012810452841222286, -0.12238907814025879, 0.12205652892589569, -0.38878223299980164, -0.5552807450294495, -0.5715146064758301, 0.3663831949234009, 1.8281446695327759, -1.186201810836792, -1.1861313581466675, -1.1630373001098633, 1.2823574542999268, 0.42382287979125977, -0.8242901563644409, -0.25236040353775024, -8.358453750610352, -4.6425275802612305, -1.8832491636276245, 0.21497689187526703, 2.174880266189575, 3.9162421226501465, 5.833858013153076, 8.154929161071777, 11.372514724731445, -11.426714897155762]
+
+Sample item scores (higher = reused sooner = keep):
+  Item 0: score = 0.2408
+  Item 1: score = 1.4649
+  Item 2: score = -0.6762
+  Item 3: score = 0.0000
+  Item 4: score = 0.0000
+  Item 5: score = -0.7390
+  Item 6: score = 0.0000
+  Item 7: score = 2.8089
+  Item 8: score = 0.0000
+  Item 9: score = -3.8584
+
+Eviction order (first to evict -> last):
+  [np.int64(9), np.int64(5), np.int64(2), np.int64(3), np.int64(4), np.int64(6), np.int64(8), np.int64(0), np.int64(1), np.int64(7)]
+
