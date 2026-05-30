@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
 from pathlib import Path
 import csv
 import glob
@@ -97,16 +100,20 @@ def _index_files_by_token(filepaths: list[str], file_kind: str) -> dict[str, str
 def read_access_eviction_trial_pairs(
     access_pattern: str,
     eviction_pattern: str,
-) -> list[tuple[int, pd.DataFrame, pd.DataFrame]]:
+) -> Iterator[tuple[int, pd.DataFrame, pd.DataFrame]]:
     """
-    Read and pair access/eviction CSV files by filename token.
+    Lazy-load paired access/eviction CSV files by filename token.
+
+    Yields the CSVs for one trial at a time, keeping at most one trial's
+    DataFrames in memory at any point.  Validation (token matching, duplicate
+    detection, empty patterns) runs on the first call to ``next()``.
 
     Expected naming convention:
       <token>_access.csv
       <token>_eviction.csv
 
-    Returns:
-      List[tuple[trial_id, access_df, eviction_df]], sorted by token.
+    Yields:
+      (trial_id, access_df, eviction_df) tuples, ordered by token.
     """
     access_files = sorted(glob.glob(access_pattern))
     eviction_files = sorted(glob.glob(eviction_pattern))
@@ -138,10 +145,41 @@ def read_access_eviction_trial_pairs(
             f"Eviction-only tokens: {eviction_only_tokens}"
         )
 
-    pairs: list[tuple[int, pd.DataFrame, pd.DataFrame]] = []
     for trial_id, token in enumerate(common_tokens):
         access_df = pd.read_csv(access_by_token[token])
         eviction_df = pd.read_csv(eviction_by_token[token])
-        pairs.append((trial_id, access_df, eviction_df))
+        yield trial_id, access_df, eviction_df
 
-    return pairs
+
+def count_access_eviction_trial_pairs(
+    access_pattern: str,
+    eviction_pattern: str,
+) -> int:
+    """Count access/eviction trial pairs without reading any CSV data.
+
+    Uses the same token-matching logic as
+    :func:`read_access_eviction_trial_pairs` but only counts matching
+    tokens — no CSV files are opened or parsed.
+
+    Returns:
+        The number of matching access/eviction file pairs.
+
+    Raises:
+        ValueError: If the access and eviction token sets do not match
+            exactly (same validation as ``read_access_eviction_trial_pairs``).
+    """
+    access_files = sorted(glob.glob(access_pattern))
+    eviction_files = sorted(glob.glob(eviction_pattern))
+    access_by_token = _index_files_by_token(access_files, "access")
+    eviction_by_token = _index_files_by_token(eviction_files, "eviction")
+    common_tokens = sorted(set(access_by_token) & set(eviction_by_token))
+
+    access_only = sorted(set(access_by_token) - set(eviction_by_token))
+    eviction_only = sorted(set(eviction_by_token) - set(access_by_token))
+    if access_only or eviction_only:
+        raise ValueError(
+            "Access/eviction trial token sets must match exactly. "
+            f"Access-only tokens: {access_only}; "
+            f"Eviction-only tokens: {eviction_only}"
+        )
+    return len(common_tokens)

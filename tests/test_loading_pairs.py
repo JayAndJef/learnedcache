@@ -14,15 +14,17 @@ def test_read_access_eviction_trial_pairs_pairs_by_sorted_token(tmp_path) -> Non
     pd.DataFrame([{"ts": 100}]).to_csv(eviction_b, index=False)
     pd.DataFrame([{"ts": 200}]).to_csv(eviction_a, index=False)
 
-    pairs = read_access_eviction_trial_pairs(
-        access_pattern=str(tmp_path / "*_access.csv"),
-        eviction_pattern=str(tmp_path / "*_eviction.csv"),
+    pair_list = list(
+        read_access_eviction_trial_pairs(
+            access_pattern=str(tmp_path / "*_access.csv"),
+            eviction_pattern=str(tmp_path / "*_eviction.csv"),
+        )
     )
 
-    assert len(pairs) == 2
+    assert len(pair_list) == 2
 
-    trial0_id, trial0_access, trial0_eviction = pairs[0]
-    trial1_id, trial1_access, trial1_eviction = pairs[1]
+    trial0_id, trial0_access, trial0_eviction = pair_list[0]
+    trial1_id, trial1_access, trial1_eviction = pair_list[1]
 
     assert trial0_id == 0
     assert trial1_id == 1
@@ -40,9 +42,11 @@ def test_read_access_eviction_trial_pairs_raises_when_no_common_tokens(tmp_path)
     pd.DataFrame([{"ts": 2}]).to_csv(tmp_path / "different_eviction.csv", index=False)
 
     with pytest.raises(ValueError, match="No matching access/eviction file pairs found by token"):
-        read_access_eviction_trial_pairs(
-            access_pattern=str(tmp_path / "*_access.csv"),
-            eviction_pattern=str(tmp_path / "*_eviction.csv"),
+        list(
+            read_access_eviction_trial_pairs(
+                access_pattern=str(tmp_path / "*_access.csv"),
+                eviction_pattern=str(tmp_path / "*_eviction.csv"),
+            )
         )
 
 def test_read_access_eviction_trial_pairs_raises_on_partial_overlap_tokens(tmp_path) -> None:
@@ -55,7 +59,9 @@ def test_read_access_eviction_trial_pairs_raises_on_partial_overlap_tokens(tmp_p
     pd.DataFrame([{"ts": 3}]).to_csv(tmp_path / "shared_eviction.csv", index=False)
 
     with pytest.raises(ValueError, match="token sets must match exactly"):
-        read_access_eviction_trial_pairs(
-            access_pattern=str(tmp_path / "*_access.csv"),
-            eviction_pattern=str(tmp_path / "*_eviction.csv"),
+        list(
+            read_access_eviction_trial_pairs(
+                access_pattern=str(tmp_path / "*_access.csv"),
+                eviction_pattern=str(tmp_path / "*_eviction.csv"),
+            )
         )
