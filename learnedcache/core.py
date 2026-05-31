@@ -23,12 +23,15 @@ from learnedcache.binary_loading import (
     discover_workloads_and_iters,
 )
 from learnedcache.helpers import save_evaluation_outputs
-from learnedcache.loading import read_access_eviction_trial_pairs, transform_logs_to_csvs
+from learnedcache.loading import (
+    count_access_eviction_trial_pairs,
+    read_access_eviction_trial_pairs,
+    transform_logs_to_csvs,
+)
 from learnedcache.models import build_model
 from learnedcache.preprocess import (
     fit_discretizer_from_sample,
     one_hot_encode_features,
-    train_and_transform_discretizer,
     transform_discretizer_batch,
 )
 
@@ -36,7 +39,6 @@ PAGE_KEY_COLS = ["dm", "dn", "in", "of"]
 TS_COL = "ts"
 
 DERIVED_FEATURE_COL = "time_since_last_access_at_eviction"
-TARGET_COL = "time_until_next_reuse_from_eviction"
 NO_REUSE_LABEL_OFFSET = 1.0
 
 def run_transform_logs(log_pattern: str, verbose: bool = True) -> None:
@@ -78,229 +80,11 @@ def _validate_array_fields(
         raise ValueError(f"{label} is missing required fields: {missing}")
 
 
-def _access_to_sorted_dict(
-    access: pd.DataFrame | np.ndarray,
-    trial_id: int,
-    required_cols: list[str],
-    discretize_cols: list[str],
-    label: str,
-) -> dict[str, np.ndarray]:
-    """Normalize access data into a dict of 1D arrays, sorted by page key then timestamp.
-
-    Works for both CSV DataFrames and binary structured arrays.
-
-    Sorts by (PAGE_KEY_COLS, TS_COL) using ``np.lexsort`` so that all
-    accesses for the same page key are **contiguous** in memory.  This is
-    required for the diff-based group boundary detection in
-    ``_build_eviction_supervised_df`` -- a simple ``argsort`` by ts alone
-    would interleave different pages that happen to share nearby timestamps.
-
-    Returns a dict with keys: ``TS_COL``, each PAGE_KEY_COL, and each
-    discretize_col.
-    """
-    if isinstance(access, pd.DataFrame):
-        _validate_required_columns(access, required_cols, label)
-        access = _require_numeric(access, [TS_COL, *discretize_cols], label)
-
-        # lexsort: last array is the primary sort key.
-        # We want page-key-group then timestamp within each group.
-        sort_idx = np.lexsort(
-            [access[TS_COL].to_numpy(dtype=np.float64)]
-            + [access[col].to_numpy() for col in reversed(PAGE_KEY_COLS)]
-        )
-
-        result: dict[str, np.ndarray] = {
-            TS_COL: access[TS_COL].to_numpy(dtype=np.float64)[sort_idx],
-            **{col: access[col].to_numpy()[sort_idx] for col in PAGE_KEY_COLS},
-            **{
-                col: access[col].to_numpy(dtype=np.float64)[sort_idx]
-                for col in discretize_cols
-            },
-        }
-    else:
-        # Binary structured array
-        _validate_array_fields(access, required_cols, label)
-
-        sort_idx = np.lexsort(
-            [access[TS_COL].astype(np.float64)]
-            + [access[col] for col in reversed(PAGE_KEY_COLS)]
-        )
-
-        result = {
-            TS_COL: access[TS_COL].astype(np.float64)[sort_idx],
-            **{col: access[col][sort_idx] for col in PAGE_KEY_COLS},
-            **{
-                col: access[col].astype(np.float64)[sort_idx]
-                for col in discretize_cols
-            },
-        }
-
-    return result
-
-
-def _build_trial_supervised_df(
-    trial_id: int,
-    access: pd.DataFrame | np.ndarray,
-    eviction: pd.DataFrame | np.ndarray,
-    discretize_cols: list[str],
-) -> pd.DataFrame:
-    """Build supervised DataFrame for a single access+eviction trial.
-
-    Returns a DataFrame with columns ``[trial_id, eviction_ts,
-    DERIVED_FEATURE_COL, TARGET_COL] + PAGE_KEY_COLS + discretize_cols``.
-    The ``TARGET_COL`` column still contains ``NaN`` for pages that are
-    never reused within the trial — the caller must fill these with a
-    global ``no_reuse_label`` after all trials have been processed.
-
-    This is the per-trial building block used by both the legacy
-    full-materialisation path (``_build_eviction_supervised_df``) and
-    the new streaming path.
-    """
-    EVICTION_TS_COL = "eviction_ts"
-    access_required = sorted(set(PAGE_KEY_COLS + [TS_COL] + discretize_cols))
-    eviction_required = [TS_COL]
-
-    # --- Normalize eviction ---
-    if isinstance(eviction, pd.DataFrame):
-        _validate_required_columns(eviction, eviction_required, f"eviction trial {trial_id}")
-        eviction = _require_numeric(eviction, [TS_COL], f"eviction trial {trial_id}")
-        eviction_ts_arr = eviction[TS_COL].to_numpy(dtype=np.float64)
-    else:
-        _validate_array_fields(eviction, eviction_required, f"eviction trial {trial_id}")
-        eviction_ts_arr = eviction[TS_COL].astype(np.float64)
-    eviction_sort = np.argsort(eviction_ts_arr)
-    eviction_ts_arr = eviction_ts_arr[eviction_sort]
-    n_evictions = len(eviction_ts_arr)
-
-    # --- Normalize access into sorted dict ---
-    sorted_access = _access_to_sorted_dict(
-        access, trial_id, access_required, discretize_cols,
-        f"access trial {trial_id}",
-    )
-
-    # --- Per-page group boundaries via numpy diff ---
-    n_access = len(sorted_access[TS_COL])
-    group_boundary = np.zeros(n_access, dtype=bool)
-    for col in PAGE_KEY_COLS:
-        col_vals = sorted_access[col]
-        group_boundary[1:] |= (col_vals[1:] != col_vals[:-1])
-    group_starts = np.concatenate([[0], np.where(group_boundary)[0]])
-    group_ends = np.concatenate([group_starts[1:], [n_access]])
-
-    BATCH_SIZE = 50  # pages per batch; small batches keep DataFrames small
-    trial_results: list[pd.DataFrame] = []
-    batch_arrays: list[dict[str, np.ndarray]] = []
-
-    for start, end in zip(group_starts, group_ends):
-        page_access_ts = sorted_access[TS_COL][start:end]
-        n_page_accesses = len(page_access_ts)
-
-        # side='right' -> pos is first index with ts > eviction_ts.
-        #   prior access idx = pos-1  (ts <= eviction_ts, exact match OK)
-        #   next access idx  = pos    (ts >  eviction_ts, exact match excluded)
-        pos = np.searchsorted(page_access_ts, eviction_ts_arr, side="right")
-
-        has_prior = pos > 0
-        prior_idx = np.clip(pos - 1, 0, n_page_accesses - 1)
-        has_future = pos < n_page_accesses
-        future_idx = np.clip(pos, 0, n_page_accesses - 1)
-
-        page_data: dict[str, np.ndarray] = {
-            EVICTION_TS_COL: eviction_ts_arr,
-            DERIVED_FEATURE_COL: eviction_ts_arr
-            - np.where(has_prior, page_access_ts[prior_idx], np.nan),
-            TARGET_COL: np.where(
-                has_future, page_access_ts[future_idx], np.nan
-            )
-            - eviction_ts_arr,
-            "trial_id": np.full(n_evictions, trial_id),
-        }
-
-        for col in PAGE_KEY_COLS:
-            page_data[col] = np.full(n_evictions, sorted_access[col][start])
-
-        for col in discretize_cols:
-            col_vals = sorted_access[col][start:end]
-            page_data[col] = np.where(has_prior, col_vals[prior_idx], np.nan)
-
-        batch_arrays.append(page_data)
-
-        if len(batch_arrays) >= BATCH_SIZE:
-            trial_results.append(
-                pd.DataFrame(
-                    {
-                        col: np.concatenate([b[col] for b in batch_arrays])
-                        for col in batch_arrays[0]
-                    }
-                ).dropna(subset=[DERIVED_FEATURE_COL])
-            )
-            batch_arrays.clear()
-
-    if batch_arrays:
-        trial_results.append(
-            pd.DataFrame(
-                {
-                    col: np.concatenate([b[col] for b in batch_arrays])
-                    for col in batch_arrays[0]
-                }
-            ).dropna(subset=[DERIVED_FEATURE_COL])
-        )
-        batch_arrays.clear()
-
-    if trial_results:
-        return pd.concat(trial_results, ignore_index=True)
-    # No supervised rows for this trial (e.g. zero evictions or no prior accesses).
-    return pd.DataFrame(columns=[
-        "trial_id", EVICTION_TS_COL, DERIVED_FEATURE_COL, TARGET_COL,
-    ] + PAGE_KEY_COLS + discretize_cols)
-
-
-def _build_eviction_supervised_df(
-    access_eviction_pairs: Iterable[tuple[int, pd.DataFrame | np.ndarray, pd.DataFrame | np.ndarray]],
-    discretize_cols: list[str],
-) -> pd.DataFrame:
-    """Build the FULL supervised DataFrame by concatenating all trials.
-
-    Legacy path — kept for backward compatibility with existing callers
-    and tests.  Prefer the streaming path (``_run_train_ranker_streaming``)
-    for new code to avoid materialising the entire dataset in memory.
-    """
-    if not discretize_cols:
-        raise ValueError("discretize_cols cannot be empty.")
-
-    EVICTION_TS_COL = "eviction_ts"
-    all_dfs: list[pd.DataFrame] = []
-
-    for trial_id, access, eviction in access_eviction_pairs:
-        trial_df = _build_trial_supervised_df(
-            trial_id, access, eviction, discretize_cols,
-        )
-        if len(trial_df) > 0:
-            all_dfs.append(trial_df)
-
-    if not all_dfs:
-        raise ValueError("No supervised rows were generated from access+eviction streams.")
-
-    supervised_df = pd.concat(all_dfs, ignore_index=True)
-
-    max_finite = supervised_df[TARGET_COL].max()
-    no_reuse_label = (
-        max_finite if pd.notnull(max_finite) else 0.0
-    ) + NO_REUSE_LABEL_OFFSET
-    supervised_df[TARGET_COL] = supervised_df[TARGET_COL].fillna(no_reuse_label)
-
-    return supervised_df[
-        ["trial_id", EVICTION_TS_COL, DERIVED_FEATURE_COL, TARGET_COL]
-        + PAGE_KEY_COLS
-        + discretize_cols
-    ]
-
-
 class StreamingSupervisedGenerator:
     """Yields ``(x_diff, y_diff)`` pair batches for one trial's eviction events.
 
     Processes eviction events in configurable chunks and access pages in
-    small groups so that peak memory is bounded by a single page-group ×
+    small groups so that peak memory is bounded by a single page-group *
     eviction-chunk working set (typically a few MB).
 
     Parameters
@@ -422,7 +206,7 @@ class StreamingSupervisedGenerator:
                 ev_range = float(ev_ts_for_range[-1] - ev_ts_for_range[0])
             else:
                 ev_range = 1e6
-            lookahead_us = max(int(ev_range * 0.30), 1_000_000)
+            lookahead_us = max(int(ev_range * 1.00), 1_000_000)
         self._lookahead_us = lookahead_us
 
         self._page_state: dict[tuple, tuple[list, list]] = defaultdict(lambda: ([], []))
@@ -1143,7 +927,6 @@ def _run_train_ranker_streaming(
 def run_train_ranker(
     access_pattern: str | None = None,
     eviction_pattern: str | None = None,
-    pairs: Iterable[tuple[int, pd.DataFrame | np.ndarray, pd.DataFrame | np.ndarray]] | None = None,
     pairs_fn: Any = None,  # Callable[[], Iterator] — streaming path
     n_trials: int | None = None,  # needed for streaming path
     source_description: str | None = None,
@@ -1159,284 +942,54 @@ def run_train_ranker(
 ) -> dict[str, Any]:
     """Train a linear Bradley-Terry pairwise-diff ranker on eviction-time events.
 
-    Supports three input paths:
+    Supports two input paths:
 
-    * **Streaming** (``pairs_fn`` or ``access_pattern`` + ``eviction_pattern``):
-      Uses per-chunk eviction-event batching with bounded forward lookahead.
-      The full training dataset is never simultaneously in RAM.
+    * **``pairs_fn``**: Callable that returns an iterator of ``(trial_id, access,
+      eviction)`` tuples. Used by ``train-from-binary`` for binary cache traces.
 
-    * **Legacy** (``pairs``): loads all data into a single DataFrame before
-      training.  Kept for backward compatibility.
+    * **``access_pattern`` + ``eviction_pattern``**: Glob patterns for CSV
+      access/eviction file pairs. Files are paired by filename token and loaded
+      lazily trial-by-trial.
+
+    Both paths use per-chunk eviction-event batching with bounded forward
+    lookahead. The full training dataset is never simultaneously in RAM.
     """
     # ── Resolve input path ──
-    use_streaming: bool
     if pairs_fn is not None:
         # Explicit streaming path (binary data from run_train_from_binary, etc.)
-        use_streaming = True
         if n_trials is None:
             n_trials = sum(1 for _ in pairs_fn())
         if source_description is None:
             source_description = "binary data (streaming)"
     elif access_pattern is not None and eviction_pattern is not None:
         # CSV pattern path → construct pairs_fn internally
-        use_streaming = True
         n_trials = count_access_eviction_trial_pairs(access_pattern, eviction_pattern)
         pairs_fn = lambda: read_access_eviction_trial_pairs(  # type: ignore[assignment]
             access_pattern, eviction_pattern
         )
         source_description = f"access={access_pattern}, eviction={eviction_pattern}"
-    elif pairs is not None:
-        use_streaming = False
-        if source_description is None:
-            source_description = "binary data (legacy)"
     else:
         raise ValueError(
-            "Must provide one of: pairs_fn, access_pattern+eviction_pattern, or pairs"
+            "Must provide pairs_fn or access_pattern+eviction_pattern"
         )
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if use_streaming:
-        return _run_train_ranker_streaming(
-            pairs_fn=pairs_fn,
-            n_trials=n_trials,
-            source_description=source_description or "",
-            output_dir=output_dir,
-            discretize_cols=discretize_cols,
-            n_bins=n_bins,
-            max_epochs=max_epochs,
-            batch_size=batch_size,
-            pairs_per_event=pairs_per_event,
-            max_pairs_total=max_pairs_total,
-            random_state=random_state,
-            verbose=verbose,
-        )
-
-    # ── Legacy materialisation path (unchanged) ──
-    if verbose:
-        print("Building eviction-time supervised dataset...")
-    df = _build_eviction_supervised_df(pairs, discretize_cols)
-
-    model_feature_cols = [*discretize_cols, DERIVED_FEATURE_COL]
-
-    if verbose:
-        print(f"Built {len(df)} supervised rows")
-        print(
-            f"Target stats ({TARGET_COL}): min={df[TARGET_COL].min():.3f}, "
-            f"median={df[TARGET_COL].median():.3f}, max={df[TARGET_COL].max():.3f}"
-        )
-        print(f"Model features: {model_feature_cols}")
-
-    trial_ids = np.sort(df["trial_id"].unique())
-    has_holdout = len(trial_ids) >= 2
-
-    if has_holdout:
-        test_trial_id = trial_ids[-1]
-        train_trials = trial_ids[:-1]
-        train_mask = df["trial_id"].isin(train_trials).to_numpy()
-        test_mask = (df["trial_id"] == test_trial_id).to_numpy()
-    else:
-        train_mask = np.ones(len(df), dtype=bool)
-        test_mask = np.zeros(len(df), dtype=bool)
-        if verbose:
-            print("Single trial: no holdout set. Training on all data.")
-
-    train_idx = np.where(train_mask)[0]
-    test_idx = np.where(test_mask)[0]
-    if len(train_idx) == 0 or (has_holdout and len(test_idx) == 0):
-        raise ValueError("Invalid trial split produced empty train or test set.")
-
-    if verbose:
-        print(f"Split by trial_id: train={train_trials.tolist()} | test={[int(test_trial_id)]}")
-        print(f"  Train rows: {len(train_idx)}  |  Test rows: {len(test_idx)}")
-
-    train_features_df = df.iloc[train_idx][model_feature_cols].reset_index(drop=True)
-    test_features_df = df.iloc[test_idx][model_feature_cols].reset_index(drop=True)
-
-    if verbose:
-        print("Discretizing features (fit on train only)...")
-    train_discretized, discretizer = train_and_transform_discretizer(
-        train_features_df,
-        n_bins=n_bins,
-        strategy="quantile",
-    )
-    del train_features_df  # free input DataFrame (keeps ~864 MB alive)
-    n_bins_list = [len(discretizer.bin_edges_[i]) - 1 for i in range(len(model_feature_cols))]
-    if verbose:
-        print(f"Bins per discretized feature: {n_bins_list}")
-
-    _transformed_test = discretizer.transform(test_features_df)
-    test_discretized = _transformed_test.data.astype(np.int8).reshape(test_features_df.shape)
-    del _transformed_test, test_features_df
-
-    x_train_full = one_hot_encode_features(train_discretized, n_bins_list)
-    x_test_full = one_hot_encode_features(test_discretized, n_bins_list)
-    y_train_raw = df.iloc[train_idx][TARGET_COL].to_numpy(dtype=np.float32)
-    y_test_raw = df.iloc[test_idx][TARGET_COL].to_numpy(dtype=np.float32)
-
-    # NumPy-based event encoding avoids pd.factorize(list(zip(...))) which
-    # converts millions of rows to Python tuples — a major CPU/memory sink.
-    # np.unique on a structured array returns inverse indices in C.
-    _train_tid = df.iloc[train_idx]["trial_id"].to_numpy(dtype=np.int32)
-    _train_ets = df.iloc[train_idx]["eviction_ts"].to_numpy(dtype=np.float64)
-    _train_evt = np.empty(len(_train_tid), dtype=[("tid", np.int32), ("ets", np.float64)])
-    _train_evt["tid"] = _train_tid
-    _train_evt["ets"] = _train_ets
-    _, train_events = np.unique(_train_evt, return_inverse=True)
-    del _train_tid, _train_ets, _train_evt
-
-    x_diff_train, y_train_pairs, train_pair_stats = _sample_pairwise_diffs_by_event(
-        x_full=x_train_full,
-        y_full=y_train_raw,
-        event_ids=train_events,
-        pairs_per_event=pairs_per_event,
-        random_state=random_state,
-        max_pairs_total=max_pairs_total,
-    )
-
-    if has_holdout:
-        _test_tid = df.iloc[test_idx]["trial_id"].to_numpy(dtype=np.int32)
-        _test_ets = df.iloc[test_idx]["eviction_ts"].to_numpy(dtype=np.float64)
-        _test_evt = np.empty(len(_test_tid), dtype=[("tid", np.int32), ("ets", np.float64)])
-        _test_evt["tid"] = _test_tid
-        _test_evt["ets"] = _test_ets
-        _, test_events = np.unique(_test_evt, return_inverse=True)
-        del _test_tid, _test_ets, _test_evt
-        x_diff_test, y_test_pairs, test_pair_stats = _sample_pairwise_diffs_by_event(
-            x_full=x_test_full,
-            y_full=y_test_raw,
-            event_ids=test_events,
-            pairs_per_event=pairs_per_event,
-            random_state=random_state + 1,
-            max_pairs_total=max_pairs_total,
-        )
-    else:
-        x_diff_test = np.empty((0, x_train_full.shape[1]), dtype=np.float32)
-        y_test_pairs = np.empty(0, dtype=np.float32)
-        test_pair_stats = {"events_total": 0, "events_with_pairs": 0,
-                           "sampled_before_tie_drop": 0, "ties_dropped": 0,
-                           "pairs_after_tie_drop": 0}
-
-    n_encoded_features = x_train_full.shape[1]
-    if verbose:
-        print(f"Feature matrix shape: train={x_train_full.shape}, test={x_test_full.shape}")
-        print(f"  One-hot features: {n_encoded_features} (from bins {n_bins_list})")
-        print(
-            "Pairwise sampling train stats: "
-            f"{train_pair_stats}, label_balance={float(np.mean(y_train_pairs)):.3f}"
-        )
-        if has_holdout:
-            print(
-                "Pairwise sampling test stats: "
-                f"{test_pair_stats}, label_balance={float(np.mean(y_test_pairs)):.3f}"
-            )
-
-    if verbose:
-        print("Building pairwise-diff model...")
-    model = build_model(n_encoded_features)
-    model.compile(
-        optimizer="adam",
-        loss="binary_crossentropy",
-        metrics=["accuracy", keras.metrics.AUC(name="auc")],
-    )
-    if verbose:
-        model.summary()
-
-    if verbose:
-        print(f"Training (max_epochs={max_epochs}, batch_size={batch_size})...")
-
-    if has_holdout:
-        early_stop = EarlyStopping(
-            monitor="val_loss",
-            patience=5,
-            restore_best_weights=True,
-            verbose=1 if verbose else 0,
-        )
-        history = model.fit(
-            x_diff_train,
-            y_train_pairs,
-            epochs=max_epochs,
-            batch_size=batch_size,
-            validation_data=(x_diff_test, y_test_pairs),
-            callbacks=[early_stop],
-            verbose=1 if verbose else 0,
-        )
-    else:
-        history = model.fit(
-            x_diff_train,
-            y_train_pairs,
-            epochs=max_epochs,
-            batch_size=batch_size,
-            verbose=1 if verbose else 0,
-        )
-
-    if has_holdout:
-        if verbose:
-            print("Evaluating...")
-        y_pred_prob = model.predict(x_diff_test, verbose=0).ravel()
-        pairwise_accuracy = float(accuracy_score(
-            y_test_pairs.astype(np.int32),
-            (y_pred_prob >= 0.5).astype(np.int32),
-        ))
-        if verbose:
-            print(f"Pairwise Test Accuracy: {pairwise_accuracy:.4f}")
-            print(f"Trained for {len(history.history.get('loss', []))} epochs")
-    else:
-        pairwise_accuracy = 0.0
-        y_pred_prob = None
-        if verbose:
-            print(f"Trained for {len(history.history.get('loss', []))} epochs")
-            print("No holdout set: skipping test evaluation and visualizations.")
-
-    model_path = output_dir / "model.keras"
-    model.save(model_path)
-    if verbose:
-        print(f"Saved model → {model_path}")
-
-    discretizer_path = output_dir / "discretizer.pkl"
-    with discretizer_path.open("wb") as f:
-        pickle.dump(discretizer, f)
-    if verbose:
-        print(f"Saved discretizer → {discretizer_path}")
-
-    weights = model.get_layer("ranking_weight").get_weights()[0].ravel()
-    save_evaluation_outputs(
-        history=history,
-        weights=weights,
-        x_eval_full=x_diff_test,
-        column_names=model_feature_cols,
-        n_bins_list=n_bins_list,
+    return _run_train_ranker_streaming(
+        pairs_fn=pairs_fn,
+        n_trials=n_trials,
+        source_description=source_description or "",
         output_dir=output_dir,
-        y_true=y_test_pairs,
-        y_pred_prob=y_pred_prob,
-        pairwise_accuracy=pairwise_accuracy,
-        access_pattern=source_description or "",
-        n_rows=len(df),
-        n_train_rows=len(train_idx),
-        n_test_rows=len(test_idx),
-        epochs_trained=len(history.history.get("loss", [])),
-        n_train_pairs=len(y_train_pairs),
-        n_test_pairs=len(y_test_pairs),
-        train_pair_stats=train_pair_stats,
-        test_pair_stats=test_pair_stats,
+        discretize_cols=discretize_cols,
+        n_bins=n_bins,
+        max_epochs=max_epochs,
+        batch_size=batch_size,
+        pairs_per_event=pairs_per_event,
+        max_pairs_total=max_pairs_total,
+        random_state=random_state,
+        verbose=verbose,
     )
-
-    if verbose:
-        print("Done.")
-
-    return {
-        "model": model,
-        "discretizer": discretizer,
-        "n_bins_list": n_bins_list,
-        "discretize_cols": model_feature_cols,
-        "pairwise_accuracy": pairwise_accuracy,
-        "history": history,
-        "n_train_pairs": len(y_train_pairs),
-        "n_test_pairs": len(y_test_pairs),
-        "train_pair_stats": train_pair_stats,
-        "test_pair_stats": test_pair_stats,
-    }
 
 def run_train_from_binary(
     data_dir: str | Path,

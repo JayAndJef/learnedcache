@@ -73,6 +73,7 @@ def export_model(
     feature_names: Annotated[
         list[str], typer.Option(help="Feature names in BPF enum order")
     ] = DEFAULT_EXPORT_FEATURE_NAMES,
+    verbose: Annotated[bool, typer.Option(help="Enable verbose output")] = False,
 ) -> None:
     """Export trained model to BPF-compatible JSON format."""
     try:
