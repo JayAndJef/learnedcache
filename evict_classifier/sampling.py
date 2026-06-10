@@ -24,9 +24,6 @@ TS_COL = "ts"
 PAGE_KEY_COLS = ("dm", "dn", "in", "of")
 DERIVED_FEATURE_COL = "time_since_last_access_at_eviction"
 
-# Kernel sentinel for "no delta tracked yet" (UNKNOWN_DELTA_NS in the policies).
-_UNKNOWN_DELTA = float(2**64 - 1)
-
 
 @dataclass
 class WorkloadSample:
@@ -108,118 +105,6 @@ def _rows(
     return out
 
 
-class _InsertionAnchor:
-    """Patch sampled rows for candidates whose page was re-inserted.
-
-    An insertion event for a page means it was non-resident immediately before
-    (``folio_added`` only fires for absent folios) — i.e. it was evicted at some
-    point after the candidate's prior access. At an eviction moment E after that
-    insertion the kernel therefore sees a *fresh* per-folio entry (created by
-    ``track_folio_insertion``): TSA anchored at the insertion time, page deltas
-    ``UNKNOWN``, frequency 0. Without this correction, training rows for such
-    candidates carry the stale pre-eviction features (KNOWN_ISSUES.md #2).
-    """
-
-    def __init__(
-        self,
-        page_id_sorted: np.ndarray,
-        ts_int_sorted: np.ndarray,
-        ins_kq: np.ndarray,
-        ins_pid: np.ndarray,
-        ins_ts: np.ndarray,
-        base: int,
-        span: int,
-        sentinel_cols: list[int],
-        zero_cols: list[int],
-    ) -> None:
-        self._page_id_sorted = page_id_sorted
-        self._ts_int_sorted = ts_int_sorted
-        self._ins_kq = ins_kq
-        self._ins_pid = ins_pid
-        self._ins_ts = ins_ts
-        self._base = base
-        self._span = span
-        self._sentinel_cols = sentinel_cols
-        self._zero_cols = zero_cols
-        self.n_corrected = 0
-
-    @classmethod
-    def build(
-        cls,
-        access: np.ndarray,
-        order: np.ndarray,
-        ts_int: np.ndarray,
-        insertion: np.ndarray | None,
-        discretize_cols: list[str],
-    ) -> "_InsertionAnchor | None":
-        if insertion is None or len(insertion) == 0:
-            return None
-
-        key_dtype = np.dtype([(c, access.dtype[c]) for c in PAGE_KEY_COLS])
-        keys = np.empty(len(access), dtype=key_dtype)
-        for c in PAGE_KEY_COLS:
-            keys[c] = access[c]
-        unique_keys, inverse = np.unique(keys, return_inverse=True)
-
-        ins_keys = np.empty(len(insertion), dtype=key_dtype)
-        for c in ("dm", "dn", "in"):
-            ins_keys[c] = insertion[c]
-        ins_keys["of"] = insertion["ix"]
-
-        # Match insertions to access-page ids; never-accessed pages produce no
-        # candidate rows, so unmatched insertions are simply dropped.
-        pos = np.clip(np.searchsorted(unique_keys, ins_keys), 0, len(unique_keys) - 1)
-        valid = unique_keys[pos] == ins_keys
-        if not valid.any():
-            return None
-        ins_pid = pos[valid].astype(np.int64)
-        ins_ts = insertion["ts"].astype(np.int64)[valid]
-
-        base = int(min(ts_int.min(), ins_ts.min()))
-        span = int(max(ts_int.max(), ins_ts.max())) - base + 2
-        if (len(unique_keys) + 1) * span >= 2**62:
-            raise OverflowError("page_id*span composite key would overflow int64")
-
-        kq = ins_pid * span + (ins_ts - base)
-        ins_order = np.argsort(kq)
-
-        col = {name: i for i, name in enumerate(discretize_cols)}
-        sentinel_cols = [col[c] for c in ("pd", "p2") if c in col]
-        zero_cols = [col[c] for c in ("fq",) if c in col]
-
-        return cls(
-            page_id_sorted=inverse[order].astype(np.int64),
-            ts_int_sorted=ts_int[order],
-            ins_kq=kq[ins_order],
-            ins_pid=ins_pid[ins_order],
-            ins_ts=ins_ts[ins_order],
-            base=base,
-            span=span,
-            sentinel_cols=sentinel_cols,
-            zero_cols=zero_cols,
-        )
-
-    def apply(self, rows: np.ndarray, rec: np.ndarray, ev_vals: np.ndarray) -> np.ndarray:
-        """Rewrite rows whose page has an insertion in (prior_access, event]."""
-        if len(rows) == 0:
-            return rows
-        pid = self._page_id_sorted[rec]
-        ev_int = ev_vals.astype(np.int64)
-        q = pid * self._span + (ev_int - self._base)
-        p = np.searchsorted(self._ins_kq, q, side="right") - 1
-        pc = np.clip(p, 0, len(self._ins_kq) - 1)
-        u = self._ins_ts[pc]
-        hit = (p >= 0) & (self._ins_pid[pc] == pid) & (u > self._ts_int_sorted[rec])
-        if hit.any():
-            rows[hit, -1] = (ev_int[hit] - u[hit]).astype(np.float32)
-            for c in self._sentinel_cols:
-                rows[hit, c] = _UNKNOWN_DELTA
-            for c in self._zero_cols:
-                rows[hit, c] = 0.0
-            self.n_corrected += int(hit.sum())
-        return rows
-
-
 @dataclass
 class _TrialSample:
     x_train: np.ndarray
@@ -229,7 +114,6 @@ class _TrialSample:
     y_eval: np.ndarray
     n_pos: int
     n_neg: int
-    n_anchor_corrected: int = 0
 
 
 def sample_trial(
@@ -245,13 +129,13 @@ def sample_trial(
     holdout_frac: float,
     rng: np.random.RandomState,
     residency_cap: float | None = None,
-    insertion: np.ndarray | None = None,
 ) -> _TrialSample:
     """Vectorized candidate sampling for one access/eviction trial.
 
-    When *insertion* (the insertion binary log) is given, rows whose page was
-    re-inserted between its prior access and the eviction event are corrected
-    to the kernel's fresh-entry view (see ``_InsertionAnchor``).
+    Feature rows come from the page's most recent prior access record, with
+    ``TSA = event - prior_access_ts`` appended — exactly the state the purged
+    kernel policies hold at eviction time (feature maps are only written at
+    ``folio_accessed``; insertions and evictions mutate no state).
     """
     _validate_fields(access, (TS_COL, *PAGE_KEY_COLS, *discretize_cols), "access")
     _validate_fields(eviction, (TS_COL,), "eviction")
@@ -266,13 +150,8 @@ def sample_trial(
         [access[c].astype(np.float32)[order] for c in discretize_cols]
     )
 
-    anchor = _InsertionAnchor.build(
-        access, order, ts.astype(np.int64), insertion, discretize_cols
-    )
-
     def materialize(rec: np.ndarray, e_idx: np.ndarray, ev: np.ndarray) -> np.ndarray:
-        rows = _rows(rec, e_idx, ev, ts_s, feats_s)
-        return anchor.apply(rows, rec, ev[e_idx]) if anchor is not None else rows
+        return _rows(rec, e_idx, ev, ts_s, feats_s)
 
     # next-access timestamp within each page (inf at the last access of a page).
     same_page = (
@@ -333,10 +212,7 @@ def sample_trial(
         x_eval = np.empty((0, n_feat), np.float32)
         y_eval = np.empty(0, np.float32)
 
-    return _TrialSample(
-        x_train, y_train, disc_sample, x_eval, y_eval, n_pos, n_neg,
-        n_anchor_corrected=(anchor.n_corrected if anchor is not None else 0),
-    )
+    return _TrialSample(x_train, y_train, disc_sample, x_eval, y_eval, n_pos, n_neg)
 
 
 def collect_workload_sample(
@@ -358,15 +234,12 @@ def collect_workload_sample(
     parts: list[_TrialSample] = []
     n_pos_seen = n_neg_seen = 0
 
-    for trial in pairs:
-        trial_id, access, eviction, *rest = trial
-        insertion = rest[0] if rest else None
+    for trial_id, access, eviction in pairs:
         ts = sample_trial(
             access, eviction, discretize_cols,
             horizon=horizon, n_train=target_rows, n_eval=eval_rows,
             disc_sample_size=disc_sample_size, balanced=balanced,
             holdout_frac=holdout_frac, rng=rng, residency_cap=residency_cap,
-            insertion=insertion,
         )
         parts.append(ts)
         n_pos_seen += ts.n_pos
@@ -375,8 +248,7 @@ def collect_workload_sample(
             print(
                 f"  trial {trial_id}: {len(access):,} accesses -> "
                 f"{len(ts.x_train):,} train / {len(ts.x_eval):,} holdout rows "
-                f"({ts.n_pos:,} pos / {ts.n_neg:,} neg available; "
-                f"{ts.n_anchor_corrected:,} rows re-anchored to insertions)"
+                f"({ts.n_pos:,} pos / {ts.n_neg:,} neg available)"
             )
 
     def _cat(attr: str) -> np.ndarray:

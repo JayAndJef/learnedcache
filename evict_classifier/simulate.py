@@ -12,11 +12,18 @@ capacity for four policies:
   each ``sample``-sized group is evicted, survivors rotate to the tail.
 
 Simulation model: the access log is the request stream; a miss inserts the
-page; insertions beyond capacity trigger eviction. Differences from the live
-system are deliberate and documented in KNOWN_ISSUES.md / IMPROVEMENTS.md:
-readahead-only insertions are absent (every simulated page is inserted by an
-access), and protect-policy features use the page's last *access-log row*
-(training semantics) rather than re-simulating the in-kernel EMA state machine.
+page; insertions beyond capacity trigger eviction. Under the purged
+(insertion/eviction-independent) kernel semantics, the protect replay is exact
+in two respects that used to be approximations: features come from the page's
+last access row and persist across evictions (matching the no-delete
+`folio_evicted`), and TSA is anchored at the last access.
+
+Remaining caveats: readahead-only insertions are absent (every simulated page
+is inserted by an access), and on PRE-purge traces the logged feature fields
+embed the old insertion-contaminated semantics — the simulation is then
+*self-consistent* with models trained on the same fields (valid for relative
+policy comparisons) but does not reproduce the purged kernel's runtime
+features. On post-purge traces it is an exact replica of deployment.
 
 Hit rates are reported for the full stream and for the final 20% of accesses
 ("tail"), since per-workload models saw the earlier portion during training.

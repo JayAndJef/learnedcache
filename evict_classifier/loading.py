@@ -151,19 +151,19 @@ def discover_workloads_and_iters(
 
 def build_pairs_from_binary(
     iter_dirs: list[Path],
-) -> Iterator[tuple[int, np.ndarray, np.ndarray, np.ndarray | None]]:
-    """Yield ``(trial_id, access, eviction, insertion)`` for a workload's iters.
+) -> Iterator[tuple[int, np.ndarray, np.ndarray]]:
+    """Yield ``(trial_id, access, eviction)`` for a workload's iter directories.
 
     Each iter dir must contain exactly one ``mglru_lc_access_*.bin`` and one
-    ``mglru_lc_eviction_*.bin``; the insertion log (``mglru_lc_insertion_*.bin``)
-    is optional and yielded as ``None`` when absent (the sampler then skips the
-    re-insertion TSA-anchor correction). Arrays are memory-mapped and yielded
-    one trial at a time so only one trial's data is resident at once.
+    ``mglru_lc_eviction_*.bin``. Training consumes only these two logs — the
+    insertion log is analysis-only (the kernel feature state is a pure function
+    of accesses, so insertions carry no training signal). Arrays are
+    memory-mapped and yielded one trial at a time so only one trial's data is
+    resident at once.
     """
     for trial_id, iter_dir in enumerate(iter_dirs):
         access_files = sorted(glob.glob(str(iter_dir / "mglru_lc_access_*.bin")))
         eviction_files = sorted(glob.glob(str(iter_dir / "mglru_lc_eviction_*.bin")))
-        insertion_files = sorted(glob.glob(str(iter_dir / "mglru_lc_insertion_*.bin")))
 
         if len(access_files) != 1:
             raise FileNotFoundError(
@@ -173,19 +173,8 @@ def build_pairs_from_binary(
             raise FileNotFoundError(
                 f"Expected exactly 1 eviction file in {iter_dir}, found {len(eviction_files)}"
             )
-        if len(insertion_files) > 1:
-            raise FileNotFoundError(
-                f"Expected at most 1 insertion file in {iter_dir}, found {len(insertion_files)}"
-            )
-        if not insertion_files:
-            warnings.warn(
-                f"{iter_dir}: no insertion log; TSA-anchor correction disabled."
-            )
 
         access_arr = read_binary_access_log(access_files[0])
         eviction_arr = read_binary_eviction_log(eviction_files[0])
-        insertion_arr = (
-            read_binary_insertion_log(insertion_files[0]) if insertion_files else None
-        )
-        yield trial_id, access_arr, eviction_arr, insertion_arr
-        del access_arr, eviction_arr, insertion_arr
+        yield trial_id, access_arr, eviction_arr
+        del access_arr, eviction_arr

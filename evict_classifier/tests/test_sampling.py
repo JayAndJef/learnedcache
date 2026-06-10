@@ -159,96 +159,29 @@ def test_interval_bounds_match_bruteforce():
                 assert got_pos == is_pos, (trial, i, j)
 
 
-def _make_insertion(records: list[dict]) -> np.ndarray:
-    from evict_classifier.loading import _INSERTION_DTYPE
-
-    arr = np.zeros(len(records), dtype=_INSERTION_DTYPE)
-    for i, rec in enumerate(records):
-        for key, val in rec.items():
-            arr[key][i] = val
-    return arr
-
-
-def test_insertion_anchor_rewrites_tsa_and_page_features():
-    # page (1,0,7,3): access at 10 (pd=11, fq=5, p2=22), next access at 70.
-    # The page is re-inserted at u=50 (so it was evicted in (10, 50)); an
-    # eviction event at E=60 must see the kernel's fresh-entry state:
-    # TSA = 60-50 = 10, pd/p2 = UNKNOWN sentinel, fq = 0.
+def test_features_and_tsa_anchor_on_prior_access_across_reinsertion():
+    # Insertion/eviction-independent semantics: a page's features and TSA come
+    # from its prior ACCESS regardless of any evict/re-insert in between (the
+    # purged kernel policies never mutate state at insertion or eviction).
+    # Page accessed at 10 (pd=11), next access 70; event at E=60:
+    # TSA = 60-10 = 50, features = the ts=10 record's.
     access = make_access(
         [
-            {"ts": 10, "dm": 1, "dn": 0, "in": 7, "of": 3, "pd": 11, "fq": 5, "p2": 22},
-            {"ts": 70, "dm": 1, "dn": 0, "in": 7, "of": 3, "pd": 1, "fq": 6, "p2": 1},
+            {"ts": 10, "dm": 1, "dn": 0, "in": 7, "of": 3, "pd": 11, "fq": 5},
+            {"ts": 70, "dm": 1, "dn": 0, "in": 7, "of": 3, "pd": 1, "fq": 6},
             {"ts": 1000, "dm": 2, "dn": 0, "in": 9, "of": 0},  # lifts ts.max (censoring)
         ]
     )
-    insertion = _make_insertion([{"ts": 50, "dm": 1, "dn": 0, "in": 7, "ix": 3}])
-    kw = dict(
-        horizon=15.0, n_train=8, n_eval=0, disc_sample_size=4,
-        balanced=False, holdout_frac=0.0,
-    )
-
-    plain = sample_trial(
-        access, make_eviction([60]), DISCRETIZE_COLS,
-        rng=np.random.RandomState(0), **kw,
-    )
-    # without the insertion log: stale anchor (TSA = 60-10) and stale features.
-    assert np.allclose(plain.x_train[:, -1], 50.0)
-    assert np.allclose(plain.x_train[:, DISCRETIZE_COLS.index("pd")], 11.0)
-
-    fixed = sample_trial(
-        access, make_eviction([60]), DISCRETIZE_COLS,
-        rng=np.random.RandomState(0), insertion=insertion, **kw,
-    )
-    assert fixed.n_anchor_corrected > 0
-    assert np.allclose(fixed.x_train[:, -1], 10.0)  # anchored at insertion
-    sent = np.float32(2.0**64)
-    assert np.allclose(fixed.x_train[:, DISCRETIZE_COLS.index("pd")], sent)
-    assert np.allclose(fixed.x_train[:, DISCRETIZE_COLS.index("p2")], sent)
-    assert np.allclose(fixed.x_train[:, DISCRETIZE_COLS.index("fq")], 0.0)
-    # label unchanged: next access 70, E=60, 10 < horizon 15 -> positive.
-    assert (fixed.y_train == 1.0).all()
-
-
-def test_insertion_anchor_ignores_insertions_before_prior_access():
-    # insertion at u=5 precedes the access at 10 -> not in (t_i, E]; no patch.
-    access = make_access(
-        [
-            {"ts": 10, "dm": 1, "dn": 0, "in": 7, "of": 3, "pd": 11},
-            {"ts": 1000, "dm": 2, "dn": 0, "in": 9, "of": 0},
-        ]
-    )
-    insertion = _make_insertion([{"ts": 5, "dm": 1, "dn": 0, "in": 7, "ix": 3}])
     res = sample_trial(
         access, make_eviction([60]), DISCRETIZE_COLS,
         horizon=15.0, n_train=8, n_eval=0, disc_sample_size=4,
-        balanced=False, holdout_frac=0.0,
-        rng=np.random.RandomState(0), insertion=insertion,
+        balanced=False, holdout_frac=0.0, rng=np.random.RandomState(0),
     )
-    assert res.n_anchor_corrected == 0
     assert np.allclose(res.x_train[:, -1], 50.0)
     assert np.allclose(res.x_train[:, DISCRETIZE_COLS.index("pd")], 11.0)
-
-
-def test_insertion_anchor_uses_latest_insertion():
-    access = make_access(
-        [
-            {"ts": 10, "dm": 1, "dn": 0, "in": 7, "of": 3},
-            {"ts": 1000, "dm": 2, "dn": 0, "in": 9, "of": 0},
-        ]
-    )
-    insertion = _make_insertion(
-        [
-            {"ts": 20, "dm": 1, "dn": 0, "in": 7, "ix": 3},
-            {"ts": 55, "dm": 1, "dn": 0, "in": 7, "ix": 3},
-        ]
-    )
-    res = sample_trial(
-        access, make_eviction([60]), DISCRETIZE_COLS,
-        horizon=15.0, n_train=8, n_eval=0, disc_sample_size=4,
-        balanced=False, holdout_frac=0.0,
-        rng=np.random.RandomState(0), insertion=insertion,
-    )
-    assert np.allclose(res.x_train[:, -1], 5.0)  # 60 - 55, latest insertion wins
+    assert np.allclose(res.x_train[:, DISCRETIZE_COLS.index("fq")], 5.0)
+    # label: next access 70, E=60, 10 < horizon 15 -> positive.
+    assert (res.y_train == 1.0).all()
 
 
 def test_collect_balanced_both_classes():
