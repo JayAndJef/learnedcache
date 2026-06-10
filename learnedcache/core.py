@@ -133,6 +133,7 @@ class StreamingSupervisedGenerator:
         max_pairs_total: int | None = None,
         batch_size: int = 256,
         page_batch_size: int = 50,
+        max_page_groups_per_chunk: int | None = None,
         random_state: int = 42,
     ) -> None:
         if chunk_events <= 0:
@@ -148,6 +149,7 @@ class StreamingSupervisedGenerator:
         self._max_pairs_total = max_pairs_total
         self._batch_size = batch_size
         self._page_batch_size = page_batch_size
+        self._max_page_groups_per_chunk = max_page_groups_per_chunk
         self._random_state = random_state
 
         # --- Access: store the ORIGINAL array + ts-sort index ---
@@ -237,7 +239,21 @@ class StreamingSupervisedGenerator:
             page_keys = list(self._page_state.keys())
             pbs = self._page_batch_size
 
-            for pg_start in range(0, len(page_keys), pbs):
+            # Subsample page groups when capped, so one epoch can train in a feasible amount of time
+            n_groups = max(1, int(np.ceil(len(page_keys) / pbs)))
+            if (
+                self._max_page_groups_per_chunk is not None
+                and n_groups > self._max_page_groups_per_chunk
+            ):
+                chosen = rng.choice(
+                    n_groups, size=self._max_page_groups_per_chunk, replace=False,
+                )
+                chosen.sort()
+            else:
+                chosen = np.arange(n_groups)
+
+            for g in chosen:
+                pg_start = int(g) * pbs
                 pg_end = min(pg_start + pbs, len(page_keys))
                 group_keys = page_keys[pg_start:pg_end]
 
@@ -387,8 +403,8 @@ class StreamingSupervisedGenerator:
             keep = has_prior
             k = int(keep.sum())
             rows = np.zeros((k, n_features), dtype=np.float32)
-            rows[:, 0] = derived[keep]
-            rows[:, 1:] = page_feats[prior_idx[keep]]
+            rows[:, :-1] = page_feats[prior_idx[keep]]
+            rows[:, -1] = derived[keep]
 
             feat_chunks.append(rows)
             targ_chunks.append(target[keep])
@@ -526,6 +542,7 @@ def _make_pair_generator(
     pairs_per_event: int = 512,
     max_pairs_total: int | None = None,
     batch_size: int = 256,
+    max_page_groups_per_chunk: int | None = None,
     random_state: int = 42,
 ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
     """Yield ``(x_batch, y_batch)`` tuples for training or validation.
@@ -554,12 +571,39 @@ def _make_pair_generator(
                 pairs_per_event=pairs_per_event,
                 max_pairs_total=max_pairs_total,
                 batch_size=batch_size,
+                max_page_groups_per_chunk=max_page_groups_per_chunk,
                 random_state=rng.randint(0, 2**31 - 1),
             )
             for x_batch, y_batch in stream:
                 yield x_batch, y_batch
             del stream
             gc.collect()  # eagerly reclaim sort-index + page-state memory
+
+
+def _count_unique_page_keys(access: np.ndarray | pd.DataFrame) -> int:
+    """Count distinct ``(dm, dn, inode, offset)`` keys in an access array.
+
+    Iterates in 100K-row chunks to keep peak memory bounded — important
+    for memmap-backed structured arrays where materialising all keys
+    at once would double the resident set.
+    """
+    if isinstance(access, pd.DataFrame):
+        return access[PAGE_KEY_COLS].drop_duplicates().shape[0]
+    seen: set[tuple] = set()
+    chunk_size = 100_000
+    n = len(access)
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        chunk = access[start:end]
+        for i in range(len(chunk)):
+            key = (
+                int(chunk["dm"][i]),
+                int(chunk["dn"][i]),
+                int(chunk["in"][i]),
+                int(chunk["of"][i]),
+            )
+            seen.add(key)
+    return len(seen)
 
 
 def _run_train_ranker_streaming(
@@ -573,6 +617,7 @@ def _run_train_ranker_streaming(
     batch_size: int,
     pairs_per_event: int,
     max_pairs_total: int | None,
+    max_page_groups_per_chunk: int | None,
     random_state: int,
     verbose: bool,
 ) -> dict[str, Any]:
@@ -604,6 +649,9 @@ def _run_train_ranker_streaming(
     n_test_events = 0
     n_train_rows = 0
     n_test_rows = 0
+    n_train_page_groups = 0  # total ceil(n_pages / page_batch_size) across train trials
+    n_test_page_groups = 0
+    _PAGE_BATCH = 50  # must match StreamingSupervisedGenerator default
 
     if verbose:
         print("Phase 1: collecting discretizer subsample and counting events...")
@@ -625,8 +673,14 @@ def _run_train_ranker_streaming(
             n_events = len(np.unique(eviction[TS_COL]))
         if is_train:
             n_train_events += n_events
+            n_train_page_groups += max(
+                1, int(np.ceil(_count_unique_page_keys(access) / _PAGE_BATCH))
+            )
         else:
             n_test_events += n_events
+            n_test_page_groups += max(
+                1, int(np.ceil(_count_unique_page_keys(access) / _PAGE_BATCH))
+            )
 
         if not is_train or n_collected >= MAX_SAMPLE:
             continue
@@ -711,17 +765,31 @@ def _run_train_ranker_streaming(
     if verbose:
         print("Phase 3: training with streaming generator...")
 
-    # Estimate steps_per_epoch and validation_steps from event counts.
+    # Estimate steps_per_epoch and validation_steps from event counts × page groups.
+    # Each eviction event is sampled once per page group (for memory efficiency),
+    # so the total pairs per pass is n_events × n_page_groups × pairs_per_event.
+    # When max_page_groups_per_chunk caps the per-chunk page groups, the
+    # effective multiplier is bounded by n_chunks × max_page_groups_per_chunk.
     # These are upper bounds — tie-dropping may reduce actual pairs, but
     # the infinite generator wrapper handles the slight overestimation.
-    train_max = max_pairs_total or (n_train_events * pairs_per_event)
-    train_pairs_est = min(n_train_events * pairs_per_event, train_max)
+    _CHUNK = 50  # chunk_events, must match the hardcoded value in _make_pair_generator
+    train_mult = n_train_page_groups
+    test_mult = n_test_page_groups
+    if max_page_groups_per_chunk is not None:
+        n_train_chunks = max(1, int(np.ceil(n_train_events / _CHUNK)))
+        train_mult = min(train_mult, n_train_chunks * max_page_groups_per_chunk)
+        if has_holdout:
+            n_test_chunks = max(1, int(np.ceil(n_test_events / _CHUNK)))
+            test_mult = min(test_mult, n_test_chunks * max_page_groups_per_chunk)
+
+    train_max = max_pairs_total or (n_train_events * pairs_per_event * train_mult)
+    train_pairs_est = min(n_train_events * pairs_per_event * train_mult, train_max)
     steps_per_epoch = max(1, int(np.ceil(train_pairs_est / batch_size)))
 
     val_steps = None
     if has_holdout:
-        val_max = max_pairs_total or (n_test_events * pairs_per_event)
-        val_pairs_est = min(n_test_events * pairs_per_event, val_max)
+        val_max = max_pairs_total or (n_test_events * pairs_per_event * test_mult)
+        val_pairs_est = min(n_test_events * pairs_per_event * test_mult, val_max)
         val_steps = max(1, int(np.ceil(val_pairs_est / batch_size)))
 
     if verbose:
@@ -745,6 +813,7 @@ def _run_train_ranker_streaming(
         pairs_per_event=pairs_per_event,
         max_pairs_total=max_pairs_total,
         batch_size=batch_size,
+        max_page_groups_per_chunk=max_page_groups_per_chunk,
         random_state=random_state,
     )
 
@@ -766,6 +835,7 @@ def _run_train_ranker_streaming(
             pairs_per_event=pairs_per_event,
             max_pairs_total=max_pairs_total,
             batch_size=batch_size,
+            max_page_groups_per_chunk=max_page_groups_per_chunk,
             random_state=random_state + 1,
         )
 
@@ -937,6 +1007,7 @@ def run_train_ranker(
     batch_size: int = 256,
     pairs_per_event: int = 512,
     max_pairs_total: int | None = None,
+    max_page_groups_per_chunk: int | None = None,
     random_state: int = 42,
     verbose: bool = True,
 ) -> dict[str, Any]:
@@ -987,6 +1058,7 @@ def run_train_ranker(
         batch_size=batch_size,
         pairs_per_event=pairs_per_event,
         max_pairs_total=max_pairs_total,
+        max_page_groups_per_chunk=max_page_groups_per_chunk,
         random_state=random_state,
         verbose=verbose,
     )
@@ -1001,6 +1073,7 @@ def run_train_from_binary(
     batch_size: int = 256,
     pairs_per_event: int = 512,
     max_pairs_total: int | None = None,
+    max_page_groups_per_chunk: int | None = None,
     pair_random_state: int = 42,
     weight_scale: int = 10000,
     verbose: bool = False,
@@ -1044,6 +1117,7 @@ def run_train_from_binary(
             batch_size=batch_size,
             pairs_per_event=pairs_per_event,
             max_pairs_total=max_pairs_total,
+            max_page_groups_per_chunk=max_page_groups_per_chunk,
             random_state=pair_random_state,
             verbose=verbose,
         )

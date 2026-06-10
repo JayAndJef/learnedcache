@@ -46,6 +46,9 @@ def train_ranker(
     max_pairs_total: Annotated[
         int | None, typer.Option(help="Optional cap on total sampled pairs")
     ] = None,
+    max_page_groups_per_chunk: Annotated[
+        int | None, typer.Option(help="Cap page groups per eviction chunk (None = all)")
+    ] = None,
     pair_random_state: Annotated[
         int, typer.Option(help="Random seed for pair sampling")
     ] = 42,
@@ -61,6 +64,7 @@ def train_ranker(
         batch_size=batch_size,
         pairs_per_event=pairs_per_event,
         max_pairs_total=max_pairs_total,
+        max_page_groups_per_chunk=max_page_groups_per_chunk,
         random_state=pair_random_state,
         verbose=True,
     )
@@ -108,6 +112,9 @@ def train_and_export(
     max_pairs_total: Annotated[
         int | None, typer.Option(help="Optional cap on total sampled pairs")
     ] = None,
+    max_page_groups_per_chunk: Annotated[
+        int | None, typer.Option(help="Cap page groups per eviction chunk (None = all)")
+    ] = None,
     pair_random_state: Annotated[
         int, typer.Option(help="Random seed for pair sampling")
     ] = 42,
@@ -132,6 +139,7 @@ def train_and_export(
         batch_size=batch_size,
         pairs_per_event=pairs_per_event,
         max_pairs_total=max_pairs_total,
+        max_page_groups_per_chunk=max_page_groups_per_chunk,
         random_state=pair_random_state,
         verbose=True,
     )
@@ -176,6 +184,9 @@ def full_pipeline(
     max_pairs_total: Annotated[
         int | None, typer.Option(help="Optional cap on total sampled pairs")
     ] = None,
+    max_page_groups_per_chunk: Annotated[
+        int | None, typer.Option(help="Cap page groups per eviction chunk (None = all)")
+    ] = None,
     pair_random_state: Annotated[
         int, typer.Option(help="Random seed for pair sampling")
     ] = 42,
@@ -208,6 +219,7 @@ def full_pipeline(
         batch_size=batch_size,
         pairs_per_event=pairs_per_event,
         max_pairs_total=max_pairs_total,
+        max_page_groups_per_chunk=max_page_groups_per_chunk,
         random_state=pair_random_state,
         verbose=True,
     )
@@ -253,6 +265,9 @@ def train_from_binary(
     max_pairs_total: Annotated[
         int | None, typer.Option(help="Optional cap on total sampled pairs")
     ] = None,
+    max_page_groups_per_chunk: Annotated[
+        int | None, typer.Option(help="Cap page groups per eviction chunk (None = all)")
+    ] = None,
     pair_random_state: Annotated[
         int, typer.Option(help="Random seed for pair sampling")
     ] = 42,
@@ -270,6 +285,7 @@ def train_from_binary(
         batch_size=batch_size,
         pairs_per_event=pairs_per_event,
         max_pairs_total=max_pairs_total,
+        max_page_groups_per_chunk=max_page_groups_per_chunk,
         pair_random_state=pair_random_state,
         weight_scale=weight_scale,
         verbose=verbose,

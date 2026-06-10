@@ -5,23 +5,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-uv run pytest                                    # Run all tests
+uv run pytest                                    # Run ranker tests
 uv run pytest tests/test_core_pairwise.py -k "test_name"  # Run a single test
-uv run learnedcache --help                       # CLI overview
+uv run learnedcache --help                       # Ranker CLI overview
 uv run learnedcache train-ranker --help          # Help for a specific subcommand
 uv run learnedcache train-from-binary --help     # Help for the binary-log training command
+
+# Eviction-time binary classifier (standalone module — NOT part of the learnedcache CLI)
+.venv/bin/python -m evict_classifier train --help
+.venv/bin/python -m evict_classifier train \
+  --data-dir data/tracer-bundle-may-28/cache_ext_logs \
+  --output-dir <out> --horizon 10 --residency-cap 30 --target-rows 5000000
+.venv/bin/python -m pytest evict_classifier/tests/      # Classifier tests
+
+# Trace-driven hit-rate simulation (FIFO / LRU / Belady MIN / protect policy)
+.venv/bin/python -m evict_classifier simulate \
+  --data-dir data/tracer-bundle-may-28/cache_ext_logs \
+  --model-root notebooks-v2/protect-test --output-dir <out> \
+  --capacities 262144,524288,1048576
 ```
 
 ## Architecture
 
-LearnedCache trains a **linear pairwise-diff ranker** to make cache eviction decisions. The model compares two cached items at eviction time and predicts which should be evicted first (lower reuse time = evict sooner). The trained model is exported as quantized integer weights for deployment in BPF (in-kernel eviction).
+This repo holds **two model pipelines**:
+
+1. The **`learnedcache` package** (Gen 5): a linear pairwise-diff ranker. The model compares two cached items at eviction time and predicts which should be evicted first (lower reuse time = evict sooner). Deployed via the `cache_ext_fifo_ml` policy.
+2. The **`evict_classifier` module** (Gen 6, current focus): a pointwise binary classifier predicting `P(page reused within horizon H)` at eviction time. Deployed via the `cache_ext_fifo_ml_protect` skip-in-place policy. Standalone by design — it *copies* the loading/preprocess code it needs from `learnedcache` so the ranker stays untouched; run via `python -m evict_classifier`, never wired into the `learnedcache` typer app.
 
 ### Model evolution
 
-The project went through several generations before landing on the current approach:
-
 - **Gen 1-3** (pointwise classifiers): Predict binned time-until-next-access directly. Used custom Keras activations (`Squaremax`, `TaylorSoftmax`) for multi-class classification. Visualized in `visualizations/` as `gen1_output.png` through `gen3_output.png` and classifier architecture diagrams (`pointwisebinaryclassifier.png`, `squaremax5classifier.png`, `taylormax5classifier.png`).
-- **Gen 5** (current — pairwise Bradley-Terry ranker): Instead of predicting absolute reuse time, compares pairs of items and predicts which is reused sooner. Single `Dense(1, sigmoid, use_bias=False)` layer on the feature difference vector. Produces interpretable per-bin weights that map directly to BPF maps.
+- **Gen 5** (pairwise Bradley-Terry ranker): Instead of predicting absolute reuse time, compares pairs of items and predicts which is reused sooner. Single `Dense(1, sigmoid, use_bias=False)` layer on the feature difference vector. Produces interpretable per-bin weights that map directly to BPF maps.
+- **Gen 6** (eviction-time binary reuse classifier, `evict_classifier/`): back to pointwise, but with a binary "reused within H" label, the same 9 eviction-time features, and `Dense(1, sigmoid, use_bias=True)` — the bias becomes the in-kernel decision offset. An insertion-time admission model was explored first and abandoned: at `folio_added` a page has no history (page-level features are all sentinels), and analysis showed reuse is inode-homogeneous with only coarse inode signal available at insertion (oracle AUC 0.92 / available-features 0.845). Eviction time has the rich page-specific signal.
 
 ### Pipeline stages
 
@@ -96,6 +111,39 @@ CSV files ──parse──→ pd.DataFrame ────────────
 
 **Binary log path:** Binary access records are 88-byte structs with fields matching the CSV columns above (plus `_pad` alignment). Eviction records are 8-byte `ts` values. Files live in `data/<workload>/iter_*/mglru_lc_{access,eviction}_*.bin`. The `train-from-binary` CLI command discovers workloads and iter dirs automatically. Binary fields are already typed as unsigned integers — no `pd.to_numeric` needed.
 
+## evict_classifier module (Gen 6)
+
+Standalone package at `evict_classifier/` — separate CLI (`python -m evict_classifier`), separate tests, zero imports from `learnedcache` (`loading.py`/`preprocess.py` are intentional copies of `binary_loading.py`/`preprocess.py`).
+
+### How it samples (the key design)
+
+Every candidate row is a *(prior access aᵢ of page p, eviction event E)* pair where E falls in the interval between aᵢ and p's next access; `label = 1 iff next_access − E < horizon`. Instead of streaming this join through a Python loop per epoch (the ranker's bottleneck), `sampling.py` computes per-access event-index bands with one lexsort + a few `searchsorted` calls and draws a bounded, class-balanced sample entirely in numpy — the join is paid **once** (~seconds for 12M accesses), then training runs in-memory. Full ycsb_b train ≈ 25 s; all three YCSB workloads ≈ 90 s at 5M rows.
+
+Two corrections applied at sampling time:
+
+- **Right-censoring**: eviction events later than `last_access_ts − horizon` are dropped (their reuse window is unobservable; without this the holdout tail degenerates to all-negative and AUC is nan).
+- **Residency cap** (`--residency-cap`, default 30 s): the eviction log has no page identity, so a page would otherwise count as a candidate long after it was realistically evicted. The cap excludes candidates idle beyond the cache-turnover estimate (`cache_pages / insertion_rate`), removing "phantom" easy negatives. Capping made AUC honest on ycsb_b/c (0.89→0.87) and *raised* ycsb_e (0.84→0.89, recall 0.48→0.74).
+
+### Module layout
+
+| Module | Role |
+|---|---|
+| `sampling.py` | Vectorized one-pass candidate sampling: `_interval_bounds` (event bands per access, with horizon + residency cap), `_draw` (weighted record/event draw), `sample_trial`, `collect_workload_sample`. Verified against an O(n²) brute force in tests. `_InsertionAnchor` consumes the insertion log (auto-discovered) to fix the TSA-anchor skew: candidates whose page was re-inserted get the kernel's fresh-entry view (TSA from insertion, `pd`/`p2` sentinels, `fq`=0) |
+| `models.py` | `build_binary_classifier`: `Dense(1, sigmoid, use_bias=True)`, layer named `ranking_weight` (exporter contract) |
+| `train.py` | Per-workload orchestration: sample → fit discretizer → one-hot once → in-memory `model.fit` → holdout eval → artifacts (`model.keras`, `discretizer.pkl`, `model_weights.json`, `eval_report.txt`, `metrics.json`, `feature_importance.png`) |
+| `export.py` | Ranker-compatible BPF JSON **plus** top-level `bias`/`bias_int`/`threshold`/`threshold_int`; bin edges clamped to u64 (sentinel float-rounding can hit 2⁶⁴) |
+| `plots.py` | `feature_importance.png` per-bin weight chart (green=protect, red=evict) |
+| `simulate.py` | Trace-driven hit-rate simulator: FIFO, LRU, Belady MIN (bypass-allowed, verified vs exhaustive search), and the protect policy with kernel-faithful min-of-group/rotation semantics. Reports full + tail-20% hit rates and the compulsory-miss ceiling |
+| `loading.py`, `preprocess.py` | Verbatim copies from `learnedcache` (keep in sync manually if the source changes) |
+| `cli.py` / `__main__.py` | Typer app; `--horizon` and `--residency-cap` are in **seconds**, converted to ns internally |
+| `KNOWN_ISSUES.md` | Documented train/serve skews and sampling limitations — **read before debugging policy behavior or trusting eval numbers** |
+
+### Key facts
+
+- Feature order is the BPF contract: `["pd","sz","fq","sd","p2","id","i2","ie", time_since_last_access_at_eviction]` — must match the enum in `cache_ext_fifo_ml_protect.bpf.c`.
+- In-kernel decision: `sum(weights_int[bin]) + bias_int > threshold_int` ⇒ protect. `threshold` is in logit units (0 ⇒ P>0.5); balanced training makes P>0.5 protect-heavy under the natural ~20% positive rate — tune per workload.
+- Reference results (5M rows, H=10s, cap=30s, may-28 traces): ycsb_b 0.874 / ycsb_c 0.887 / ycsb_e 0.890 holdout AUC. Artifacts in `notebooks-v2/protect-test/`.
+
 ## Repository layout
 
 ### `data/` — Input traces
@@ -124,13 +172,24 @@ Three YCSB workload directories (ycsb_b, ycsb_c, ycsb_e), each containing the ar
 - `model.keras`, `discretizer.pkl`, `model_weights.json`, `eval_report.txt`
 - `accuracy.png`, `loss.png`, `live_auc.png`, `feature_importance.png`
 
-### `tests/` — Test suite
+### `tests/` — Test suite (ranker)
 
 3 test files plus `conftest.py`:
 
 - `test_core_pairwise.py` — Pairwise sampling correctness
 - `test_export_contract.py` — BPF export format contract
 - `test_loading_pairs.py` — Access/eviction file pairing logic
+
+The classifier's tests live separately in `evict_classifier/tests/` (run with
+`.venv/bin/python -m pytest evict_classifier/tests/`): interval-band brute-force
+equivalence, weighted-draw bounds, label/censoring/residency-cap behavior,
+export contract (bias/threshold), and an end-to-end train smoke test on
+synthetic `.bin` files.
+
+### `notebooks-v2/` — Trace analysis + classifier artifacts
+
+- `binary_log_analysis.ipynb` — event distributions, reaccess probability (by insertion/first-access position), insertion→access deltas, re-insertion timing for the may-28 binary traces. The findings here motivated the Gen 6 label design (time-based fill exclusion, horizon) and killed the insertion-time model.
+- `protect-test/{ycsb_b,ycsb_c,ycsb_e}/` — trained Gen 6 artifacts (weights JSON, keras model, discretizer, eval report, weight plot).
 
 ### `notebooks/` — Analysis notebooks
 
