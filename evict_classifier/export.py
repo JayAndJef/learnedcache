@@ -17,7 +17,8 @@ import numpy as np
 from .models import WEIGHT_LAYER_NAME
 from .sampling import DERIVED_FEATURE_COL
 
-# Eviction-time feature order -- identical to the ranker / fifo_ml BPF policy.
+# Eviction-time feature order -- the BPF contract: must match the enum in
+# cache_ext_fifo_ml_protect.bpf.c.
 DEFAULT_FEATURE_NAMES = [
     "pd", "sz", "fq", "sd", "p2", "id", "i2", "ie", DERIVED_FEATURE_COL,
 ]

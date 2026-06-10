@@ -15,9 +15,6 @@ dependencies = [
     "typer>=0.21.1",
 ]
 
-[project.scripts]
-learnedcache = "learnedcache.cli:app"
-
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
