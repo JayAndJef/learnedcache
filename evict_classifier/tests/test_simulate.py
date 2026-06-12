@@ -78,16 +78,28 @@ def test_belady_beats_or_ties_everyone():
 
 
 def test_protect_never_protect_with_batch1_equals_fifo():
-    # threshold so high nothing is protected, batch=1 sample=1 -> exact FIFO.
+    # threshold so high nothing is protected, batch=1 -> head-first scan
+    # evicts exactly the oldest folio every time: exact FIFO.
     s = _stream(TEXTBOOK)
-    res = run_protect(s, capacity=3, model=_trivial_model(10**9), batch=1, sample=1)
+    res = run_protect(s, capacity=3, model=_trivial_model(10**9), batch=1)
     assert res["accesses"] - res["hits"] == 15
 
 
 def test_protect_all_protected_still_makes_progress():
-    # threshold below bias=0 -> everything protected; eviction must still
-    # evict one per group (stalest), keeping size bounded at capacity.
+    # threshold below bias=0 -> everything protected; pass 1 rotates the whole
+    # scan budget, then the fallback pass must still evict head-first.
     s = _stream(TEXTBOOK * 5)
-    res = run_protect(s, capacity=3, model=_trivial_model(-1), batch=1, sample=2)
+    res = run_protect(s, capacity=3, model=_trivial_model(-1), batch=1)
     assert res["hits"] > 0
     assert res["accesses"] == len(TEXTBOOK) * 5
+
+
+def test_protect_all_protected_fallback_equals_fifo_order():
+    # With everything protected and batch=1, pass 1 rotates everyone and the
+    # fallback evicts the (rotated) head -- still one eviction per overflow,
+    # so cache size stays exactly at capacity.
+    s = _stream([1, 2, 3, 4, 1, 2, 3, 4])
+    res = run_protect(s, capacity=2, model=_trivial_model(-1), batch=1)
+    # 8 accesses, 4 distinct pages, capacity 2: every access misses under
+    # any rotate-then-evict order for this cyclic string.
+    assert res["accesses"] - res["hits"] == 8

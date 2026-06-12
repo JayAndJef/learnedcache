@@ -25,7 +25,11 @@ from sklearn.metrics import (
 )
 
 from .export import DEFAULT_FEATURE_NAMES, export_classifier
-from .loading import build_pairs_from_binary, discover_workloads_and_iters
+from .loading import (
+    build_pairs_from_binary,
+    discover_workloads_and_iters,
+    estimate_turnover,
+)
 from .models import build_binary_classifier
 from .plots import save_weight_plot
 from .preprocess import (
@@ -67,13 +71,15 @@ def _evaluate(
 
 
 def _write_eval_report(path: Path, name: str, metrics: dict[str, Any]) -> None:
-    if not metrics:
+    if "confusion" not in metrics:
         path.write_text(f"{name}: no holdout set (single eviction event or empty).\n")
         return
     c = metrics["confusion"]
     path.write_text(
         f"Eviction-time binary reuse classifier -- {name}\n"
         f"{'=' * 48}\n"
+        f"horizon ({metrics.get('horizon_source', 'manual')}) : "
+        f"{metrics['horizon_ns'] / 1e9:.1f}s\n"
         f"holdout rows         : {metrics['n_eval']:,}\n"
         f"positive rate        : {metrics['positive_rate']:.4f}\n"
         f"AUC                  : {metrics['auc']:.4f}\n"
@@ -90,7 +96,8 @@ def train_workload(
     output_dir: str | Path,
     *,
     discretize_cols: list[str] = DEFAULT_DISCRETIZE_COLS,
-    horizon: float,
+    horizon: float | None,
+    capacity_pages: int | None = None,
     target_rows: int = 2_000_000,
     balanced: bool = True,
     n_bins: int = 10,
@@ -112,9 +119,54 @@ def train_workload(
     are positive when the next reuse occurs within ``horizon`` of the eviction
     moment; candidates idle longer than ``residency_cap`` are excluded as
     implausibly still-resident (see ``sampling._interval_bounds``).
+
+    When ``horizon`` is None it is derived from the measured cache turnover
+    (fill/rotation time = capacity / insertion rate -- see
+    ``loading.estimate_turnover``); ``capacity_pages`` optionally overrides the
+    insertions-until-first-eviction capacity estimate. A None ``residency_cap``
+    follows the horizon (they are the same physical quantity); pass 0 to
+    disable the cap entirely.
     """
     out = Path(output_dir) / name
     out.mkdir(parents=True, exist_ok=True)
+
+    horizon_provenance: dict[str, Any] = {"horizon_source": "manual"}
+    if horizon is None:
+        estimates = [estimate_turnover(d, capacity_pages) for d in iter_dirs]
+        turnover = float(np.mean([e.turnover_ns for e in estimates]))
+        # Right-censoring drops events later than last_access - H, and evictions
+        # only start after the cold-start fill (~one turnover in). If H is not
+        # well inside [first_eviction, last_access], no labelable events remain
+        # (a short trace at a big cgroup barely turns over once) -- clamp to
+        # half that window.
+        windows = [e.label_window_ns for e in estimates if e.label_window_ns]
+        horizon = min(turnover, min(windows) / 2) if windows else turnover
+        e = estimates[0]
+        horizon_provenance = {
+            "horizon_source": "auto",
+            "turnover_ns": turnover,
+            "horizon_clamped": horizon < turnover,
+            "capacity_pages": e.capacity_pages,
+            "capacity_estimated": e.capacity_estimated,
+            "insertion_rate_per_s": e.insertion_rate_per_s,
+            "active_seconds": e.active_seconds,
+            "n_insertions": e.n_insertions,
+        }
+        if verbose:
+            cap_src = "estimated" if e.capacity_estimated else "given"
+            clamp_note = (
+                f" (clamped to {horizon / 1e9:.1f}s -- half the observable "
+                f"first-eviction-to-last-access window)" if horizon < turnover else ""
+            )
+            print(
+                f"{name}: rate {e.insertion_rate_per_s:,.0f}/s over "
+                f"{e.active_seconds:.1f}s active, capacity ~{e.capacity_pages:,} "
+                f"pages ({cap_src}) -> turnover ~{turnover / 1e9:.1f}s{clamp_note}"
+            )
+    if residency_cap is None:
+        residency_cap = horizon
+    elif residency_cap <= 0:
+        residency_cap = None  # explicitly disabled
 
     if verbose:
         print(f"\n=== {name}: collecting training sample ===")
@@ -181,9 +233,13 @@ def train_workload(
         verbose=(2 if verbose else 0),
     )
 
-    metrics: dict[str, Any] = {}
+    metrics: dict[str, Any] = {
+        "horizon_ns": float(horizon),
+        "residency_cap_ns": float(residency_cap) if residency_cap is not None else None,
+        **horizon_provenance,
+    }
     if validation_data is not None:
-        metrics = _evaluate(model, validation_data[0], validation_data[1], threshold)
+        metrics |= _evaluate(model, validation_data[0], validation_data[1], threshold)
         if verbose:
             print(
                 f"=== {name}: holdout AUC {metrics['auc']:.4f} "

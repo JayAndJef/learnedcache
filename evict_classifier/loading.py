@@ -12,6 +12,7 @@ import glob
 import re
 import warnings
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -98,6 +99,106 @@ def read_binary_insertion_log(filepath: str | Path) -> np.ndarray:
     if not filepath.exists():
         raise FileNotFoundError(f"Insertion log not found: {filepath}")
     return _mmap_or_warn(filepath, _INSERTION_DTYPE, "insertion log")
+
+
+# Inter-insertion gaps longer than this split the trace into separate active
+# periods when estimating the insertion rate (insertions are bursty/phased;
+# a naive n/(last-first) rate underestimates whenever the trace has idle gaps).
+_ACTIVE_GAP_NS = 1_000_000_000
+
+
+@dataclass
+class TurnoverEstimate:
+    """Cache turnover (fill/rotation time) measured from one iter's logs."""
+
+    turnover_ns: float
+    capacity_pages: int
+    capacity_estimated: bool  # False when the caller supplied the capacity
+    insertion_rate_per_s: float
+    active_seconds: float
+    n_insertions: int
+    # last_access_ts - first_eviction_ts: the window in which an eviction
+    # event can be labeled (reuse is only observable up to the last access,
+    # and evictions can run past it -- e.g. the harness teardown drain). None
+    # when the eviction log is empty (only possible with a supplied capacity).
+    # The auto horizon must stay well inside this window or right-censoring
+    # leaves no labelable events.
+    label_window_ns: float | None
+
+
+def _single_log(iter_dir: Path, pattern: str) -> Path:
+    files = sorted(glob.glob(str(iter_dir / pattern)))
+    if len(files) != 1:
+        raise FileNotFoundError(
+            f"Expected exactly 1 {pattern} in {iter_dir}, found {len(files)}"
+        )
+    return Path(files[0])
+
+
+def estimate_turnover(
+    iter_dir: str | Path, capacity_pages: int | None = None
+) -> TurnoverEstimate:
+    """Estimate the cache turnover time from the insertion + eviction logs.
+
+    These two logs are *complete* event streams (unlike the access log, which
+    the kernel subsamples), so both estimates are direct measurements:
+
+    - capacity: the cache starts cold (the harness drops caches), so every
+      insertion before the first eviction event is a fill --
+      ``capacity = #insertions with ts < first_eviction_ts`` -- unless the
+      caller supplies *capacity_pages*;
+    - insertion rate: averaged over the active periods of insertion (periods
+      split at inter-insertion gaps > ``_ACTIVE_GAP_NS``).
+
+    ``turnover = capacity / rate`` is the fill/rotation time -- the natural
+    scale for both the reuse horizon and the residency cap.
+    """
+    iter_dir = Path(iter_dir)
+    ins = read_binary_insertion_log(_single_log(iter_dir, "mglru_lc_insertion_*.bin"))
+    if len(ins) < 2:
+        raise ValueError(f"{iter_dir}: insertion log has {len(ins)} records; "
+                         "cannot estimate an insertion rate.")
+    ins_ts = np.sort(ins["ts"].astype(np.int64))
+
+    ev = read_binary_eviction_log(_single_log(iter_dir, "mglru_lc_eviction_*.bin"))
+    ev_ts = ev["ts"].astype(np.int64)
+    label_window_ns = None
+    if len(ev_ts):
+        # The access log is subsampled, but its *end timestamp* is still the
+        # right labeling boundary (a max is insensitive to subsampling).
+        acc = read_binary_access_log(_single_log(iter_dir, "mglru_lc_access_*.bin"))
+        if len(acc):
+            label_window_ns = float(int(acc["ts"].max()) - int(ev_ts.min()))
+
+    capacity_estimated = capacity_pages is None
+    if capacity_pages is None:
+        if len(ev_ts) == 0:
+            raise ValueError(
+                f"{iter_dir}: eviction log is empty -- the cache never filled, so "
+                "capacity cannot be estimated. Pass --capacity or --horizon."
+            )
+        capacity_pages = int(np.searchsorted(ins_ts, int(ev_ts.min())))
+        if capacity_pages == 0:
+            raise ValueError(
+                f"{iter_dir}: no insertions precede the first eviction; logs look "
+                "inconsistent. Pass --capacity or --horizon."
+            )
+
+    gaps = np.diff(ins_ts)
+    active_ns = int(gaps[gaps <= _ACTIVE_GAP_NS].sum())
+    if active_ns <= 0:
+        raise ValueError(f"{iter_dir}: zero active insertion time; cannot estimate rate.")
+    rate_per_ns = (len(ins_ts) - 1) / active_ns
+
+    return TurnoverEstimate(
+        turnover_ns=capacity_pages / rate_per_ns,
+        capacity_pages=capacity_pages,
+        capacity_estimated=capacity_estimated,
+        insertion_rate_per_s=rate_per_ns * 1e9,
+        active_seconds=active_ns / 1e9,
+        n_insertions=int(len(ins_ts)),
+        label_window_ns=label_window_ns,
+    )
 
 
 _ITER_PATTERN = re.compile(r"^iter_(\d+)$")

@@ -39,7 +39,14 @@ def train_cmd(
         None, "--workload", help="Restrict to these workloads (repeatable)."
     ),
     horizon_seconds: float = typer.Option(
-        10.0, "--horizon", help="Reuse horizon H in seconds (label = reused within H)."
+        None, "--horizon",
+        help="Reuse horizon H in seconds (label = reused within H). Omit to derive "
+        "H from the measured cache turnover (capacity / insertion rate).",
+    ),
+    capacity_pages: int = typer.Option(
+        None, "--capacity",
+        help="Cache capacity in pages for the turnover estimate (auto-horizon mode "
+        "only); omit to estimate it as the insertion count before the first eviction.",
     ),
     target_rows: int = typer.Option(
         2_000_000, "--target-rows", help="Reservoir budget (total training rows)."
@@ -56,9 +63,10 @@ def train_cmd(
     ),
     weight_scale: int = typer.Option(10000, "--weight-scale"),
     residency_cap_seconds: float = typer.Option(
-        30.0, "--residency-cap",
+        None, "--residency-cap",
         help="Exclude candidates idle longer than this (seconds) as implausibly "
-        "still-resident; roughly the cache turnover time. 0 disables.",
+        "still-resident; roughly the cache turnover time. Omit to follow the "
+        "horizon (manual or measured); 0 disables.",
     ),
     holdout_frac: float = typer.Option(
         0.2, "--holdout-frac", help="Temporal-holdout fraction per workload."
@@ -71,7 +79,10 @@ def train_cmd(
         data_dir=data_dir,
         output_dir=output_dir,
         workloads=workload or None,
-        horizon=horizon_seconds * _NS_PER_SECOND,
+        horizon=(
+            horizon_seconds * _NS_PER_SECOND if horizon_seconds is not None else None
+        ),
+        capacity_pages=capacity_pages,
         target_rows=target_rows,
         balanced=balanced,
         n_bins=n_bins,
@@ -80,7 +91,9 @@ def train_cmd(
         threshold=threshold,
         weight_scale=weight_scale,
         residency_cap=(
-            residency_cap_seconds * _NS_PER_SECOND if residency_cap_seconds > 0 else None
+            residency_cap_seconds * _NS_PER_SECOND
+            if residency_cap_seconds is not None
+            else None
         ),
         holdout_frac=holdout_frac,
         random_state=random_state,

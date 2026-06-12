@@ -65,12 +65,14 @@ def _interval_bounds(
     cap restricts training to events where the page is plausibly still resident
     (i.e. its in-list time-since-access is below the cache turnover time).
     """
+    # Bands are int32: they index eviction events (a few 100k), and int64
+    # bands double the resident footprint on multi-10M-record traces.
     win_end = next_ts if residency_cap is None else np.minimum(next_ts, ts_s + residency_cap)
-    lo = np.searchsorted(ev, ts_s, side="right")
-    hi = np.searchsorted(ev, win_end, side="left")  # next_ts==inf -> len(ev)
+    lo = np.searchsorted(ev, ts_s, side="right").astype(np.int32)
+    hi = np.searchsorted(ev, win_end, side="left").astype(np.int32)  # inf -> len(ev)
     hi = np.maximum(hi, lo)
     pos_start = np.maximum(ts_s, next_ts - horizon)
-    pos_lo = np.searchsorted(ev, pos_start, side="right")
+    pos_lo = np.searchsorted(ev, pos_start, side="right").astype(np.int32)
     pos_lo = np.clip(pos_lo, lo, hi)
     return lo, pos_lo, hi
 
@@ -82,27 +84,17 @@ def _draw(counts: np.ndarray, starts: np.ndarray, n: int, rng: np.random.RandomS
     of eligible events), then a uniform event offset in ``[0, counts[i])`` is
     picked, giving global event index ``starts[i] + offset``.
     """
-    counts = counts.astype(np.int64)
-    total = int(counts.sum())
+    counts = np.asarray(counts)
+    cdf = np.cumsum(counts, dtype=np.int64)  # int64: pair totals exceed 2^31
+    total = int(cdf[-1]) if len(cdf) else 0
     if n <= 0 or total == 0:
         empty = np.empty(0, dtype=np.int64)
         return empty, empty
-    cdf = np.cumsum(counts)
     rec = np.searchsorted(cdf, rng.random(n) * total, side="right")
     rec = np.clip(rec, 0, len(counts) - 1)
     c = counts[rec]
     off = np.minimum((rng.random(n) * c).astype(np.int64), np.maximum(c - 1, 0))
-    return rec, starts[rec] + off
-
-
-def _rows(
-    rec: np.ndarray, e_idx: np.ndarray, ev: np.ndarray, ts_s: np.ndarray, feats_s: np.ndarray
-) -> np.ndarray:
-    """Assemble feature rows: prior-access features + derived time-since-access."""
-    out = np.empty((len(rec), feats_s.shape[1] + 1), dtype=np.float32)
-    out[:, :-1] = feats_s[rec]
-    out[:, -1] = (ev[e_idx] - ts_s[rec]).astype(np.float32)
-    return out
+    return rec, starts[rec].astype(np.int64) + off
 
 
 @dataclass
@@ -141,31 +133,39 @@ def sample_trial(
     _validate_fields(eviction, (TS_COL,), "eviction")
 
     ts = access[TS_COL].astype(np.float64)
+    ts_max = float(ts.max()) if len(ts) else 0.0
     dm, dn, ino, of = (access[c] for c in PAGE_KEY_COLS)
 
     # Sort by page key, then ts (lexsort's last key is primary).
     order = np.lexsort((ts, of, ino, dn, dm))
     ts_s = ts[order]
-    feats_s = np.column_stack(
-        [access[c].astype(np.float32)[order] for c in discretize_cols]
-    )
+    del ts  # ts_s + ts_max carry everything needed below
 
+    n_feat_total = len(discretize_cols) + 1
+
+    # Feature rows are gathered straight from the (memory-mapped) access array
     def materialize(rec: np.ndarray, e_idx: np.ndarray, ev: np.ndarray) -> np.ndarray:
-        return _rows(rec, e_idx, ev, ts_s, feats_s)
+        out = np.empty((len(rec), n_feat_total), dtype=np.float32)
+        src = order[rec]
+        for j, col in enumerate(discretize_cols):
+            out[:, j] = access[col][src]
+        out[:, -1] = ev[e_idx] - ts_s[rec]
+        return out
 
     # next-access timestamp within each page (inf at the last access of a page).
-    same_page = (
-        (dm[order][1:] == dm[order][:-1])
-        & (dn[order][1:] == dn[order][:-1])
-        & (ino[order][1:] == ino[order][:-1])
-        & (of[order][1:] == of[order][:-1])
-    )
+    # One sorted key resident at a time -- not all four at once.
+    same_page = np.ones(max(len(ts_s) - 1, 0), dtype=bool)
+    for key in (dm, dn, ino, of):
+        key_s = key[order]
+        same_page &= key_s[1:] == key_s[:-1]
+        del key_s
     next_ts = np.full(len(ts_s), np.inf)
     next_ts[:-1][same_page] = ts_s[1:][same_page]
+    del same_page
 
     # Right-censoring: keep only events whose reuse window is observable.
     ev_all = np.sort(eviction[TS_COL].astype(np.float64))
-    ev_valid = ev_all[ev_all <= ts.max() - horizon]
+    ev_valid = ev_all[ev_all <= ts_max - horizon]
     if holdout_frac > 0.0 and len(ev_valid) >= 2:
         split = np.quantile(ev_valid, 1.0 - holdout_frac)
         ev_train, ev_eval = ev_valid[ev_valid < split], ev_valid[ev_valid >= split]
@@ -175,29 +175,35 @@ def sample_trial(
     # ── Training sample ──
     lo, pos_lo, hi = _interval_bounds(ev_train, ts_s, next_ts, horizon, residency_cap)
     n_pos_arr, n_neg_arr = hi - pos_lo, pos_lo - lo
-    n_pos, n_neg = int(n_pos_arr.sum()), int(n_neg_arr.sum())
+    n_pos = int(n_pos_arr.sum(dtype=np.int64))
+    n_neg = int(n_neg_arr.sum(dtype=np.int64))
 
     if balanced:
         n_p = n_train // 2
         pr, pe = _draw(n_pos_arr, pos_lo, n_p, rng)
         nr, ne = _draw(n_neg_arr, lo, n_train - n_p, rng)
-        x_train = np.concatenate(
-            [materialize(pr, pe, ev_train), materialize(nr, ne, ev_train)]
-        )
+        rec = np.concatenate([pr, nr])
+        e_idx = np.concatenate([pe, ne])
         y_train = np.concatenate(
             [np.ones(len(pr), np.float32), np.zeros(len(nr), np.float32)]
         )
+        del pr, pe, nr, ne
     else:
         rec, e_idx = _draw(n_pos_arr + n_neg_arr, lo, n_train, rng)
-        x_train = materialize(rec, e_idx, ev_train)
         y_train = (e_idx >= pos_lo[rec]).astype(np.float32)
 
-    perm = rng.permutation(len(x_train))
-    x_train, y_train = x_train[perm], y_train[perm]
+    # Shuffle the (record, event) indices before materializing, so only one
+    # feature matrix is ever allocated.
+    perm = rng.permutation(len(rec))
+    rec, e_idx, y_train = rec[perm], e_idx[perm], y_train[perm]
+    del perm
+    x_train = materialize(rec, e_idx, ev_train)
+    del rec, e_idx
 
     # Natural-ratio sample for fitting the discretizer.
     drec, de = _draw(n_pos_arr + n_neg_arr, lo, disc_sample_size, rng)
     disc_sample = materialize(drec, de, ev_train)
+    del drec, de, lo, pos_lo, hi, n_pos_arr, n_neg_arr
 
     # ── Holdout sample (natural ratio) ──
     if len(ev_eval) > 0:
@@ -208,8 +214,7 @@ def sample_trial(
         x_eval = materialize(erec, ee, ev_eval)
         y_eval = (ee >= epos_lo[erec]).astype(np.float32)
     else:
-        n_feat = len(discretize_cols) + 1
-        x_eval = np.empty((0, n_feat), np.float32)
+        x_eval = np.empty((0, n_feat_total), np.float32)
         y_eval = np.empty(0, np.float32)
 
     return _TrialSample(x_train, y_train, disc_sample, x_eval, y_eval, n_pos, n_neg)
@@ -252,7 +257,9 @@ def collect_workload_sample(
             )
 
     def _cat(attr: str) -> np.ndarray:
-        return np.concatenate([getattr(p, attr) for p in parts], axis=0)
+        arrays = [getattr(p, attr) for p in parts]
+        # Single-iter workloads skip a full-size copy.
+        return arrays[0] if len(arrays) == 1 else np.concatenate(arrays, axis=0)
 
     x_train, y_train = _cat("x_train"), _cat("y_train")
     if len(x_train) > target_rows:  # multiple iters overshoot the budget

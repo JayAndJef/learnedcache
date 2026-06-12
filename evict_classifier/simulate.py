@@ -7,9 +7,11 @@ capacity for four policies:
 * ``lru``     -- classic LRU replacement.
 * ``belady``  -- Belady's MIN (offline-optimal upper bound, bypass allowed).
 * ``protect`` -- the trained binary classifier under the *kernel's actual*
-  selection semantics (``__bpf_cache_ext_list_sample``): folios are taken from
-  the front of the list in ``batch x sample`` chunks, the min-score folio of
-  each ``sample``-sized group is evicted, survivors rotate to the tail.
+  selection semantics (``bpf_cache_ext_list_iterate_extended``): the list is
+  scanned head-first; predicted-reused folios rotate to the tail (CLOCK-style
+  second chance), the rest are evicted until the per-call quota is met. If the
+  scan budget (the kernel's ``max_iter``) runs out first, a fallback pass
+  evicts head-first ignoring the model.
 
 Simulation model: the access log is the request stream; a miss inserts the
 page; insertions beyond capacity trigger eviction. Under the purged
@@ -46,11 +48,9 @@ from .sampling import PAGE_KEY_COLS, TS_COL
 
 RAW_FEATURE_COLS = ["pd", "sz", "fq", "sd", "p2", "id", "i2", "ie"]
 
-# Must mirror cache_ext_fifo_ml_protect.bpf.c.
-PROTECT_BASE = 1 << 40
-TSA_CAP = 1 << 36
+# Must mirror cache_ext_fifo_ml_protect.bpf.c / the kernel iterate kfunc.
 DEFAULT_BATCH = 32  # request_nr_folios_to_evict (SWAP_CLUSTER_MAX)
-DEFAULT_SAMPLE = 5  # sampling_options.sample_size
+DEFAULT_SCAN_CAP = 4096  # kernel max_iter per iterate call
 
 TAIL_FRAC = 0.2
 
@@ -207,18 +207,17 @@ def load_model(model_file: str | Path) -> dict[str, Any]:
     }
 
 
-def _protect_scores(
+def _protect_mask(
     model: dict[str, Any], feats_rows: np.ndarray, tsa: np.ndarray
 ) -> np.ndarray:
-    """Kernel-faithful integer scores: protect band + recency tiebreak."""
+    """Kernel-faithful protect decision: integer logit + bias > threshold."""
     k = len(feats_rows)
     logit = np.full(k, model["bias"], dtype=np.int64)
     for f in range(len(model["edges"])):
         vals = tsa.astype(np.float64) if f == len(RAW_FEATURE_COLS) else feats_rows[:, f]
         bins = np.searchsorted(model["edges"][f], vals, side="right")
         logit += model["weights"][f][bins]
-    protected = logit > model["threshold"]
-    return np.where(protected, PROTECT_BASE, 0) - np.minimum(tsa, TSA_CAP)
+    return logit > model["threshold"]
 
 
 def run_protect(
@@ -227,7 +226,7 @@ def run_protect(
     model: dict[str, Any],
     *,
     batch: int = DEFAULT_BATCH,
-    sample: int = DEFAULT_SAMPLE,
+    scan_cap: int = DEFAULT_SCAN_CAP,
 ) -> dict:
     n = len(stream)
     tail_start = int(n * (1 - TAIL_FRAC))
@@ -254,30 +253,43 @@ def run_protect(
         size += 1
         while size > capacity:
             now = int(ts[i])
-            k = min(batch * sample, size)
-            cand = [dq.popleft() for _ in range(k)]
-            rows = np.fromiter((last_row[q] for q in cand), dtype=np.int64, count=k)
-            tsa = now - ts[rows]
-            scores = _protect_scores(model, feats[rows], tsa)
+            needed = min(batch, size)
+            budget = min(scan_cap, len(dq))
 
-            # Min of each consecutive `sample`-sized group is evicted.
-            n_full = k // sample
-            evict: list[int] = []
-            if n_full:
-                grouped = scores[: n_full * sample].reshape(n_full, sample)
-                evict.extend(
-                    (np.argmin(grouped, axis=1) + np.arange(n_full) * sample).tolist()
-                )
-            if k % sample:
-                evict.append(n_full * sample + int(np.argmin(scores[n_full * sample :])))
+            # Pass 1: head-first scan. Protected folios rotate to the tail,
+            # the rest are evicted, until the quota is met or the scan budget
+            # (the kernel's max_iter) runs out. Scored in chunks for speed;
+            # the unscanned remainder of a chunk goes back to the head.
+            while needed > 0 and budget > 0:
+                k = min(budget, max(4 * needed, 64), len(dq))
+                cand = [dq.popleft() for _ in range(k)]
+                rows = np.fromiter((last_row[q] for q in cand), dtype=np.int64, count=k)
+                tsa = now - ts[rows]
+                protected = _protect_mask(model, feats[rows], tsa)
 
-            evict_set = set(evict)
-            for j, q in enumerate(cand):
-                if j in evict_set:
-                    resident[q] = 0
-                    size -= 1
-                else:
-                    dq.append(q)
+                # The scan stops right after the needed-th unprotected folio.
+                unprot_cum = np.cumsum(~protected)
+                end = min(int(np.searchsorted(unprot_cum, needed)) + 1, k)
+                for j in range(end):
+                    q = cand[j]
+                    if protected[j]:
+                        dq.append(q)
+                    else:
+                        resident[q] = 0
+                        size -= 1
+                        needed -= 1
+                if end < k:
+                    dq.extendleft(reversed(cand[end:]))
+                budget -= end
+
+            # Pass 2 (forward progress): evict head-first ignoring the model.
+            # (The simulator has no dirty/locked folios, so this always
+            # finishes the quota.)
+            while needed > 0 and dq:
+                q = dq.popleft()
+                resident[q] = 0
+                size -= 1
+                needed -= 1
     return _result("protect", n, hits, hits_tail, capacity)
 
 
