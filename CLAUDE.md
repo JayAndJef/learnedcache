@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The Python side of LearnedCache: the **`evict_classifier`** module trains an eviction-time
 binary reuse classifier — `P(page reused within horizon H)` from 9 page/inode features —
 and exports quantized integer weights for the `cache_ext_fifo_ml_protect` BPF policy
-(in `../cache_ext_lc`). It also ships a trace-driven cache simulator (FIFO / LRU /
-Belady MIN / the protect policy) for offline hit-rate evaluation.
+(in `../cache_ext_lc`). (A trace-driven hit-rate simulator existed through Gen 6
+validation and has been removed; evaluation now happens on the VM benchmark.)
 
 The earlier **Gen-5 pairwise ranker** (`learnedcache` package, `cache_ext_fifo_ml`
 policy) has been **removed**; `notebooks/` and `visualizations/` remain as historical
@@ -29,11 +29,6 @@ archive of Gen 1–5 and may reference deleted code.
 # -> <out>/<workload>/{model_weights.json, model.keras, discretizer.pkl,
 #                      eval_report.txt, metrics.json, feature_importance.png}
 
-# Trace-driven hit-rate simulation (capacities in 4KiB pages)
-.venv/bin/python -m evict_classifier simulate \
-  --data-dir data/tracer-bundle-may-28/cache_ext_logs \
-  --model-root <out> --output-dir <sim-out> \
-  --capacities 262144,524288,1048576
 ```
 
 `--horizon` and `--residency-cap` are in **seconds** (trace timestamps are ns; the CLI
@@ -115,22 +110,19 @@ that protect-heavy at the natural ~20% positive rate — tune per workload).
 | `train.py` | Per-workload orchestration: sample → fit discretizer → one-hot once → in-memory fit → holdout eval → artifacts |
 | `export.py` | BPF JSON: per-feature `bin_edges` (u64-clamped) + `weights_int`, plus top-level `bias_int`/`threshold_int`/`weight_scale` |
 | `plots.py` | `feature_importance.png` per-bin weight chart (green=protect, red=evict) |
-| `simulate.py` | Trace-driven simulator: FIFO, LRU, Belady MIN (bypass-allowed, verified vs exhaustive search), protect with kernel-faithful head-first scan semantics (protected folios rotate to the tail, evict until quota, fallback pass for forward progress); reports full + tail-20% hit rates and the compulsory-miss ceiling |
-| `cli.py` / `__main__.py` | Typer app: `train`, `simulate` |
-| `KNOWN_ISSUES.md` | Documented residual skews/limitations — **read before debugging policy behavior or trusting eval numbers** |
-| `tests/` | Brute-force band equivalence, draw bounds, label/censoring/cap, export contract, simulator textbook reference strings, end-to-end train smoke |
+| `cli.py` / `__main__.py` | Typer app: `train` |
+| `tests/` | Brute-force band equivalence, draw bounds, label/censoring/cap, export contract, turnover estimator, end-to-end train smoke |
 
 Feature order is the BPF contract: `["pd","sz","fq","sd","p2","id","i2","ie",
 time_since_last_access_at_eviction]` — must match the enum in
 `cache_ext_fifo_ml_protect.bpf.c`.
 
-### Reference results (pre-purge traces, self-consistent)
+### Reference results (jun-11 traces, purged tracer, auto horizon)
 
-5M rows, H=10 s, cap=30 s: holdout AUC ycsb_b 0.874 / ycsb_c 0.887 / ycsb_e 0.890.
-Simulated hit rate at 1 GiB: protect beats FIFO by +4–6 pts and LRU by +1.4–1.9 pts on
-all three workloads, capturing ~15–35% of the LRU→Belady headroom (curves converge to
-the ceiling at ≥8 GiB where the working set fits). Artifacts + sweep:
-`notebooks-v2/protect-test/`.
+5M rows, auto H (~53-108 s turnover at the 10 G collection cgroup): holdout AUC
+ycsb_a 0.903 / b 0.900 / c 0.924 / d 0.989 / e 0.911 / f 0.903. Models:
+`output-jun-11/`. ycsb_d has no eviction-policy headroom (compulsory-bound) —
+exclude it from hit-rate claims.
 
 ## Repository layout
 
@@ -138,7 +130,7 @@ the ceiling at ≥8 GiB where the working set fits). Artifacts + sweep:
   (access/eviction/insertion), **pre-purge provenance**.
 - `evict_classifier/` — the module (see table above).
 - `notebooks-v2/` — `binary_log_analysis.ipynb` (trace analysis that motivated Gen 6)
-  and `protect-test/` (trained artifacts + simulation sweeps).
+  and `protect-test/` (trained model artifacts).
 - `notebooks/`, `visualizations/` — **historical archive** (Gens 1–5); reference the
   removed ranker package and old artifact dirs, not expected to run.
 
